@@ -1,0 +1,49 @@
+# Core framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Google Cloud Speech-to-Text
+google-cloud-speech==2.27.0
+
+# Media processing
+moviepy==1.0.3
+pydub==0.25.1
+ffmpeg-python==0.2.0
+
+# YouTube downloading
+pytube==15.0.0
+
+# Subtitle processing
+pysubs2==1.6.0
+
+# Task queue
+redis==5.0.1
+rq==1.15.1
+
+# HTTP client
+httpx==0.25.2
+
+# File handling
+python-multipart==0.0.6
+
+# Logging and monitoring
+structlog==23.2.0
+prometheus-client==0.19.0
+
+# Development and testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+flake8==6.1.0
+black==23.11.0
+
+# Environment management
+python-dotenv==1.0.0
+
+# Database (for job tracking)
+sqlmodel==0.0.14
+databases[sqlite]==0.8.0
+
+# Utility
+click==8.1.7 
