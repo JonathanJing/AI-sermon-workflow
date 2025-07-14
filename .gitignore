@@ -2,6 +2,7 @@
 .env
 service-account.json
 *.pyc
+*.mp3
 *.wav
 *.webm
 *.srt

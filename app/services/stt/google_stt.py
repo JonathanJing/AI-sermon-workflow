@@ -179,9 +179,26 @@ class GoogleSTTService:
             if not audio_path.exists():
                 raise FileNotFoundError(f"Audio file not found: {audio_file_path}")
             
-            # Check file size - if too large, use long-running operation
+            # Get file size
             file_size_mb = audio_path.stat().st_size / (1024 * 1024)
-            use_long_running = file_size_mb > 10  # 10MB threshold
+            
+            # Detect sample rate and duration from the audio file
+            try:
+                from pydub import AudioSegment
+                audio_segment = AudioSegment.from_wav(audio_file_path)
+                detected_sample_rate = audio_segment.frame_rate
+                audio_duration_seconds = len(audio_segment) / 1000.0  # pydub duration is in milliseconds
+                logger.info(f"Detected sample rate: {detected_sample_rate}Hz for {job_id}")
+                logger.info(f"Audio duration: {audio_duration_seconds:.1f}s for {job_id}")
+            except Exception as e:
+                logger.warning(f"Could not detect audio properties for {job_id}, using defaults: {str(e)}")
+                detected_sample_rate = 16000
+                audio_duration_seconds = 0  # If we can't detect duration, assume it's short
+            
+            # Determine whether to use long-running operation
+            # Google's synchronous API has a 60-second limit for audio duration
+            # Also use long-running for very large files (>10MB)
+            use_long_running = audio_duration_seconds > 60 or file_size_mb > 10
             
             with open(audio_file_path, 'rb') as audio_file:
                 content = audio_file.read()
@@ -189,25 +206,15 @@ class GoogleSTTService:
             # Create audio object
             audio = speech.RecognitionAudio(content=content)
             
-            # Detect sample rate from the audio file for proper config
-            try:
-                from pydub import AudioSegment
-                audio_segment = AudioSegment.from_wav(audio_file_path)
-                detected_sample_rate = audio_segment.frame_rate
-                logger.info(f"Detected sample rate: {detected_sample_rate}Hz for {job_id}")
-            except Exception as e:
-                logger.warning(f"Could not detect sample rate for {job_id}, using default 16000Hz: {str(e)}")
-                detected_sample_rate = 16000
-            
             # Create recognition config with detected sample rate
             config = self._create_recognition_config(sample_rate=detected_sample_rate)
             
             # Perform transcription
             if use_long_running:
-                logger.info(f"Using long-running operation for {job_id} (file size: {file_size_mb:.2f} MB)")
+                logger.info(f"Using long-running operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
                 response = self._transcribe_long_running(config, audio, job_id)
             else:
-                logger.info(f"Using synchronous operation for {job_id} (file size: {file_size_mb:.2f} MB)")
+                logger.info(f"Using synchronous operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
                 response = self._transcribe_synchronous(config, audio, job_id)
             
             # Process results
@@ -217,6 +224,7 @@ class GoogleSTTService:
             processing_metadata = {
                 "transcription_method": "long_running" if use_long_running else "synchronous",
                 "file_size_mb": file_size_mb,
+                "audio_duration_seconds": audio_duration_seconds,
                 "estimated_cost_usd": self._estimate_cost(file_size_mb, transcript_result.total_duration),
                 "confidence_score": transcript_result.confidence,
                 "language_detected": transcript_result.language,
