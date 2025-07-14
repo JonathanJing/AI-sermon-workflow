@@ -105,6 +105,7 @@ def process_transcription_job(job_id: str):
 def _get_audio_file(job: TranscriptionJob) -> tuple[str, Dict[str, Any]]:
     """
     Get audio file based on job source type
+    Handles large files by splitting them into chunks if needed
     
     Args:
         job: Transcription job
@@ -122,6 +123,22 @@ def _get_audio_file(job: TranscriptionJob) -> tuple[str, Dict[str, Any]]:
         # Extract and process audio
         processed_audio_path, audio_metadata = audio_extractor.extract_from_file(audio_file_path, job.id)
         
+        # Check if we need to split the audio for large files
+        processed_path = Path(processed_audio_path)
+        file_size_mb = processed_path.stat().st_size / (1024 * 1024)
+        
+        if file_size_mb > 9.0:  # If larger than 9MB, split it
+            logger.info(f"Audio file is {file_size_mb:.2f}MB, splitting for job {job.id}")
+            chunk_files = audio_extractor.split_audio_if_needed(processed_audio_path, job.id)
+            
+            if len(chunk_files) > 1:
+                # Use the first chunk as the primary file path for STT processing
+                # The STT service will automatically detect and process all chunks
+                processed_audio_path = chunk_files[0]
+                audio_metadata["chunks_created"] = len(chunk_files)
+                audio_metadata["chunked_processing"] = True
+                logger.info(f"Created {len(chunk_files)} chunks for job {job.id}")
+        
         # Combine metadata
         combined_metadata = {**metadata, **audio_metadata}
         
@@ -133,6 +150,21 @@ def _get_audio_file(job: TranscriptionJob) -> tuple[str, Dict[str, Any]]:
         
         # Process local file
         audio_file_path, metadata = audio_extractor.extract_from_file(job.source_file_path, job.id)
+        
+        # Check if we need to split the audio for large files
+        processed_path = Path(audio_file_path)
+        file_size_mb = processed_path.stat().st_size / (1024 * 1024)
+        
+        if file_size_mb > 9.0:  # If larger than 9MB, split it
+            logger.info(f"Audio file is {file_size_mb:.2f}MB, splitting for job {job.id}")
+            chunk_files = audio_extractor.split_audio_if_needed(audio_file_path, job.id)
+            
+            if len(chunk_files) > 1:
+                # Use the first chunk as the primary file path for STT processing
+                audio_file_path = chunk_files[0]
+                metadata["chunks_created"] = len(chunk_files)
+                metadata["chunked_processing"] = True
+                logger.info(f"Created {len(chunk_files)} chunks for job {job.id}")
         
         return audio_file_path, metadata
         

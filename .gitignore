@@ -1,2 +1,11 @@
-
+.venv/
 .env
+service-account.json
+*.pyc
+*.wav
+*.webm
+*.srt
+*.vtt
+data/.DS_Store
+data/processed/.DS_Store
+.DS_Store

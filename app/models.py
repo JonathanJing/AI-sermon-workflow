@@ -51,7 +51,7 @@ class TranscriptionJob(SQLModel, table=True):
     completed_at: Optional[datetime] = None
     
     # Additional metadata
-    metadata: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(Text))
+    job_metadata: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(Text))
 
 
 class TranscriptionRequest(BaseModel):

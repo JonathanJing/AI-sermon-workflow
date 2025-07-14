@@ -14,7 +14,7 @@ class GoogleCloudConfig(BaseModel):
 class STTConfig(BaseModel):
     """Speech-to-Text configuration"""
     language_code: str = "cmn-Hans-CN"
-    model: str = "video"
+    model: str = "default"  # Changed from "video" to "default" - video model doesn't support Chinese
     enable_word_time_offsets: bool = True
     enable_automatic_punctuation: bool = True
     cost_limit_usd: float = 10.0
@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     
     # Speech-to-Text
     stt_language_code: str = "cmn-Hans-CN"
-    stt_model: str = "video"
+    stt_model: str = "default"
     stt_enable_word_time_offsets: bool = True
     stt_enable_automatic_punctuation: bool = True
     stt_cost_limit_usd: float = 10.0

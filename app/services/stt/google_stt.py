@@ -40,9 +40,10 @@ class GoogleSTTService:
     def transcribe_audio(self, audio_file_path: str, job_id: str) -> Tuple[TranscriptResult, Dict[str, Any]]:
         """
         Transcribe audio file using Google Cloud Speech-to-Text
+        Handles both single files and chunked audio files
         
         Args:
-            audio_file_path: Path to the audio file
+            audio_file_path: Path to the audio file or first chunk
             job_id: Unique job identifier
             
         Returns:
@@ -57,6 +58,122 @@ class GoogleSTTService:
         try:
             logger.info(f"Starting transcription for job {job_id}: {audio_file_path}")
             
+            # Check if this is a chunked audio file
+            audio_path = Path(audio_file_path)
+            chunk_files = self._find_chunk_files(audio_path, job_id)
+            
+            if len(chunk_files) > 1:
+                logger.info(f"Processing {len(chunk_files)} audio chunks for job {job_id}")
+                return self._transcribe_chunked_audio(chunk_files, job_id)
+            else:
+                logger.info(f"Processing single audio file for job {job_id}")
+                return self._transcribe_single_file(audio_file_path, job_id)
+            
+        except Exception as e:
+            logger.error(f"Transcription failed for job {job_id}: {str(e)}")
+            raise Exception(f"Transcription failed: {str(e)}")
+    
+    def _find_chunk_files(self, audio_path: Path, job_id: str) -> List[str]:
+        """Find all chunk files for a job"""
+        try:
+            # Look for chunk files in the same directory
+            chunk_pattern = f"{job_id}_chunk_*.wav"
+            chunk_files = list(audio_path.parent.glob(chunk_pattern))
+            
+            if chunk_files:
+                # Sort by chunk number
+                chunk_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
+                return [str(f) for f in chunk_files]
+            else:
+                # No chunks found, return original file
+                return [str(audio_path)]
+                
+        except Exception as e:
+            logger.warning(f"Error finding chunk files for job {job_id}: {str(e)}")
+            return [str(audio_path)]
+    
+    def _transcribe_chunked_audio(self, chunk_files: List[str], job_id: str) -> Tuple[TranscriptResult, Dict[str, Any]]:
+        """Transcribe multiple audio chunks and combine results"""
+        try:
+            all_entries = []
+            total_cost = 0.0
+            total_confidence = 0.0
+            confidence_count = 0
+            total_duration = 0.0
+            processing_methods = []
+            
+            logger.info(f"Transcribing {len(chunk_files)} chunks for job {job_id}")
+            
+            for i, chunk_file in enumerate(chunk_files):
+                logger.info(f"Processing chunk {i+1}/{len(chunk_files)}: {chunk_file}")
+                
+                try:
+                    chunk_result, chunk_metadata = self._transcribe_single_file(chunk_file, f"{job_id}_chunk_{i}")
+                    
+                    # Adjust timing for chunk offset
+                    chunk_offset = total_duration
+                    for entry in chunk_result.entries:
+                        entry.start_time += chunk_offset
+                        entry.end_time += chunk_offset
+                        all_entries.append(entry)
+                    
+                    # Update totals
+                    total_duration += chunk_result.total_duration
+                    total_cost += chunk_metadata.get("estimated_cost_usd", 0.0)
+                    processing_methods.append(chunk_metadata.get("transcription_method", "unknown"))
+                    
+                    if chunk_result.confidence:
+                        total_confidence += chunk_result.confidence
+                        confidence_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Failed to process chunk {i+1} for job {job_id}: {str(e)}")
+                    # Continue with other chunks
+                    continue
+            
+            if not all_entries:
+                raise Exception("No chunks were successfully transcribed")
+            
+            # Calculate overall confidence
+            overall_confidence = total_confidence / confidence_count if confidence_count > 0 else None
+            
+            # Create combined transcript result
+            transcript_result = TranscriptResult(
+                entries=all_entries,
+                total_duration=total_duration,
+                language=self.config.language_code,
+                confidence=overall_confidence
+            )
+            
+            # Save combined transcript
+            transcript_path = self._save_transcript(transcript_result, job_id)
+            
+            # Create processing metadata
+            processing_metadata = {
+                "transcription_method": "chunked",
+                "chunks_processed": len(chunk_files),
+                "chunks_successful": len([e for e in all_entries if e]),
+                "file_size_mb": sum(Path(f).stat().st_size for f in chunk_files) / (1024 * 1024),
+                "transcript_path": transcript_path,
+                "estimated_cost_usd": total_cost,
+                "confidence_score": overall_confidence,
+                "language_detected": self.config.language_code,
+                "total_alternatives": len(all_entries),
+                "processing_methods": list(set(processing_methods))
+            }
+            
+            logger.info(f"Chunked transcription completed for job {job_id}: {len(all_entries)} entries, "
+                       f"confidence: {overall_confidence:.3f if overall_confidence else 'N/A'}")
+            
+            return transcript_result, processing_metadata
+            
+        except Exception as e:
+            logger.error(f"Chunked transcription failed for job {job_id}: {str(e)}")
+            raise Exception(f"Chunked transcription failed: {str(e)}")
+    
+    def _transcribe_single_file(self, audio_file_path: str, job_id: str) -> Tuple[TranscriptResult, Dict[str, Any]]:
+        """Transcribe a single audio file"""
+        try:
             # Load audio file
             audio_path = Path(audio_file_path)
             if not audio_path.exists():
@@ -72,50 +189,71 @@ class GoogleSTTService:
             # Create audio object
             audio = speech.RecognitionAudio(content=content)
             
-            # Create recognition config
-            config = self._create_recognition_config()
+            # Detect sample rate from the audio file for proper config
+            try:
+                from pydub import AudioSegment
+                audio_segment = AudioSegment.from_wav(audio_file_path)
+                detected_sample_rate = audio_segment.frame_rate
+                logger.info(f"Detected sample rate: {detected_sample_rate}Hz for {job_id}")
+            except Exception as e:
+                logger.warning(f"Could not detect sample rate for {job_id}, using default 16000Hz: {str(e)}")
+                detected_sample_rate = 16000
+            
+            # Create recognition config with detected sample rate
+            config = self._create_recognition_config(sample_rate=detected_sample_rate)
             
             # Perform transcription
             if use_long_running:
-                logger.info(f"Using long-running operation for job {job_id} (file size: {file_size_mb:.2f} MB)")
+                logger.info(f"Using long-running operation for {job_id} (file size: {file_size_mb:.2f} MB)")
                 response = self._transcribe_long_running(config, audio, job_id)
             else:
-                logger.info(f"Using synchronous operation for job {job_id} (file size: {file_size_mb:.2f} MB)")
+                logger.info(f"Using synchronous operation for {job_id} (file size: {file_size_mb:.2f} MB)")
                 response = self._transcribe_synchronous(config, audio, job_id)
             
             # Process results
             transcript_result = self._process_transcription_results(response, job_id)
             
-            # Save transcript to file
-            transcript_path = self._save_transcript(transcript_result, job_id)
-            
             # Calculate processing metadata
             processing_metadata = {
                 "transcription_method": "long_running" if use_long_running else "synchronous",
                 "file_size_mb": file_size_mb,
-                "transcript_path": transcript_path,
                 "estimated_cost_usd": self._estimate_cost(file_size_mb, transcript_result.total_duration),
                 "confidence_score": transcript_result.confidence,
                 "language_detected": transcript_result.language,
                 "total_alternatives": len(response.results) if response.results else 0
             }
             
-            logger.info(f"Transcription completed for job {job_id}: {len(transcript_result.entries)} entries, "
-                       f"confidence: {transcript_result.confidence:.3f}")
-            
             return transcript_result, processing_metadata
             
         except Exception as e:
-            logger.error(f"Transcription failed for job {job_id}: {str(e)}")
-            raise Exception(f"Transcription failed: {str(e)}")
+            logger.error(f"Single file transcription failed for {job_id}: {str(e)}")
+            raise Exception(f"Single file transcription failed: {str(e)}")
     
-    def _create_recognition_config(self) -> speech.RecognitionConfig:
+    def _create_recognition_config(self, sample_rate: int = 16000) -> speech.RecognitionConfig:
         """Create recognition configuration"""
-        return speech.RecognitionConfig(
+        
+        # Debug: Print the exact configuration being used
+        logger.info(f"Creating recognition config with:")
+        logger.info(f"  - language_code: {self.config.language_code}")
+        logger.info(f"  - model: {self.config.model}")
+        logger.info(f"  - sample_rate_hertz: {sample_rate}")
+        logger.info(f"  - enable_word_time_offsets: {self.config.enable_word_time_offsets}")
+        logger.info(f"  - enable_automatic_punctuation: {self.config.enable_automatic_punctuation}")
+        
+        # Validate model compatibility with Chinese language
+        if self.config.language_code.startswith("cmn-") and self.config.model == "video":
+            logger.warning(f"Video model is not supported for Chinese language {self.config.language_code}. Using 'default' model instead.")
+            model_to_use = "default"
+        else:
+            model_to_use = self.config.model
+            
+        logger.info(f"  - final model to use: {model_to_use}")
+        
+        config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=16000,
+            sample_rate_hertz=sample_rate,
             language_code=self.config.language_code,
-            model=self.config.model,
+            model=model_to_use,  # Use validated model
             enable_word_time_offsets=self.config.enable_word_time_offsets,
             enable_automatic_punctuation=self.config.enable_automatic_punctuation,
             use_enhanced=True,  # Use enhanced model for better accuracy
@@ -131,6 +269,11 @@ class GoogleSTTService:
                 )
             ]
         )
+        
+        # Debug: Print the final config
+        logger.info(f"Final recognition config: {config}")
+        
+        return config
     
     def _transcribe_synchronous(self, config: speech.RecognitionConfig, audio: speech.RecognitionAudio, job_id: str) -> speech.RecognizeResponse:
         """Perform synchronous transcription"""
@@ -285,7 +428,9 @@ class GoogleSTTService:
             model_rates = {
                 "default": 0.024,
                 "enhanced": 0.048,
-                "video": 0.072
+                "video": 0.072,
+                "latest_long": 0.048,
+                "latest_short": 0.048
             }
             
             rate_per_minute = model_rates.get(self.config.model, 0.048)

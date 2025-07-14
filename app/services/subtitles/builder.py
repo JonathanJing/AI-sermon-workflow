@@ -51,7 +51,7 @@ class SubtitleBuilder:
             subtitle_file.save(str(srt_path), format_="srt")
             
             # Save VTT file
-            subtitle_file.save(str(vtt_path), format_="webvtt")
+            subtitle_file.save(str(vtt_path), format_="vtt")
             
             # Generate metadata
             metadata = {

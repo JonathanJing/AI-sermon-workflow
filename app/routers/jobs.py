@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify API key if configured"""
-    if settings.api.key:
+    # Only verify if API key is configured and not empty
+    if settings.api.key and settings.api.key.strip():
         if not credentials or credentials.credentials != settings.api.key:
             raise HTTPException(status_code=401, detail="Invalid API key")
     return credentials
@@ -56,7 +57,7 @@ async def create_transcription_job(
             source_url=str(request.url) if request.url else None,
             source_file_path=request.file_path,
             title=request.title,
-            metadata=request.metadata
+            job_metadata=request.metadata
         )
         
         # Save job to storage

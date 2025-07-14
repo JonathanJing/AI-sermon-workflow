@@ -1,10 +1,16 @@
 import os
 import logging
+import ssl
+import certifi
+import yt_dlp
+import json
 from typing import Optional, Tuple
 from pathlib import Path
-from pytube import YouTube
 from pydub import AudioSegment
 from app.config import settings
+
+# Fix SSL certificate issues on macOS
+ssl._create_default_https_context = ssl._create_unverified_context
 
 logger = logging.getLogger(__name__)
 
@@ -33,38 +39,51 @@ class YouTubeDownloader:
         try:
             logger.info(f"Starting YouTube download for job {job_id}: {url}")
             
-            # Create YouTube object
-            yt = YouTube(url)
+            # Configure yt-dlp options
+            output_filename = f"{job_id}_audio.%(ext)s"
+            output_path_template = str(self.download_path / output_filename)
             
-            # Get video metadata
-            metadata = {
-                "title": yt.title,
-                "description": yt.description,
-                "author": yt.author,
-                "length": yt.length,
-                "views": yt.views,
-                "publish_date": yt.publish_date.isoformat() if yt.publish_date else None,
-                "thumbnail_url": yt.thumbnail_url
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': output_path_template,
+                'extractaudio': True,
+                'audioformat': 'mp3',
+                'quiet': True,
+                'no_warnings': True,
             }
             
-            # Validate duration (max 2 hours for STT batch limit)
-            if yt.length > 7200:  # 2 hours in seconds
-                raise ValueError(f"Video duration ({yt.length}s) exceeds maximum allowed (7200s)")
-            
-            logger.info(f"Video metadata - Title: {yt.title}, Duration: {yt.length}s")
-            
-            # Get audio stream (prefer high quality)
-            audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-            
-            if not audio_stream:
-                raise ValueError("No audio stream found")
+            # Get video info first
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                # Get video metadata
+                metadata = {
+                    "title": info.get('title', ''),
+                    "description": info.get('description', ''),
+                    "author": info.get('uploader', ''),
+                    "length": info.get('duration', 0),
+                    "views": info.get('view_count', 0),
+                    "publish_date": info.get('upload_date', ''),
+                    "thumbnail_url": info.get('thumbnail', '')
+                }
+                
+                # Validate duration (max 2 hours for STT batch limit)
+                duration = info.get('duration', 0)
+                if duration > 7200:  # 2 hours in seconds
+                    raise ValueError(f"Video duration ({duration}s) exceeds maximum allowed (7200s)")
+                
+                logger.info(f"Video metadata - Title: {info.get('title', '')}, Duration: {duration}s")
             
             # Download audio
-            output_filename = f"{job_id}_audio.{audio_stream.subtype}"
-            output_path = self.download_path / output_filename
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
             
-            logger.info(f"Downloading audio stream: {audio_stream.abr} bitrate")
-            audio_stream.download(output_path=str(self.download_path), filename=output_filename)
+            # Find the downloaded file
+            downloaded_files = list(self.download_path.glob(f"{job_id}_audio.*"))
+            if not downloaded_files:
+                raise ValueError("Downloaded file not found")
+            
+            output_path = downloaded_files[0]
             
             # Verify file exists and has content
             if not output_path.exists() or output_path.stat().st_size == 0:
@@ -76,8 +95,8 @@ class YouTubeDownloader:
             # Update metadata with file info
             metadata.update({
                 "file_size_mb": file_size_mb,
-                "audio_format": audio_stream.subtype,
-                "audio_bitrate": audio_stream.abr
+                "audio_format": output_path.suffix[1:],  # Remove the dot
+                "audio_bitrate": "best available"
             })
             
             return str(output_path), metadata
@@ -97,18 +116,19 @@ class YouTubeDownloader:
             Dictionary with video metadata
         """
         try:
-            yt = YouTube(url)
-            return {
-                "title": yt.title,
-                "description": yt.description,
-                "author": yt.author,
-                "length": yt.length,
-                "views": yt.views,
-                "publish_date": yt.publish_date.isoformat() if yt.publish_date else None,
-                "thumbnail_url": yt.thumbnail_url,
-                "available_qualities": [stream.resolution for stream in yt.streams.filter(file_extension='mp4')],
-                "available_audio_bitrates": [stream.abr for stream in yt.streams.filter(only_audio=True)]
-            }
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return {
+                    "title": info.get('title', ''),
+                    "description": info.get('description', ''),
+                    "author": info.get('uploader', ''),
+                    "length": info.get('duration', 0),
+                    "views": info.get('view_count', 0),
+                    "publish_date": info.get('upload_date', ''),
+                    "thumbnail_url": info.get('thumbnail', ''),
+                    "available_qualities": [f.get('height', 'unknown') for f in info.get('formats', []) if f.get('vcodec') != 'none'],
+                    "available_audio_bitrates": [f.get('abr', 'unknown') for f in info.get('formats', []) if f.get('acodec') != 'none']
+                }
         except Exception as e:
             logger.error(f"Failed to get video info: {str(e)}")
             raise Exception(f"Failed to get video info: {str(e)}")
@@ -124,7 +144,8 @@ class YouTubeDownloader:
             True if valid, False otherwise
         """
         try:
-            yt = YouTube(url)
-            return yt.title is not None
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return info.get('title') is not None
         except Exception:
             return False 
