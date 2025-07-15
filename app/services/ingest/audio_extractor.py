@@ -1,5 +1,5 @@
 import logging
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 from pathlib import Path
 from pydub import AudioSegment
 from pydub.utils import which
@@ -96,7 +96,7 @@ class AudioExtractor:
             logger.error(f"Audio extraction failed for job {job_id}: {str(e)}")
             raise Exception(f"Audio extraction failed: {str(e)}")
     
-    def _process_for_stt(self, audio: AudioSegment, job_id: str, target_size_mb: float = 9.0) -> AudioSegment:
+    def _process_for_stt(self, audio: AudioSegment, job_id: str, target_size_mb: float = 8.0) -> AudioSegment:
         """
         Process audio for optimal STT performance with size optimization
         
@@ -116,7 +116,7 @@ class AudioExtractor:
                 logger.info(f"Converting stereo to mono for job {job_id}")
                 audio = audio.set_channels(1)
             
-            # Preserve original sample rate for STT (Google supports 8kHz-48kHz)
+            # Preserve original sample rate for STT (Google supports 8kHz-48kHz, but we enforce 16kHz minimum)
             # Only resample if outside supported range or if very low quality
             if audio.frame_rate < 16000:
                 target_sample_rate = 16000
@@ -187,18 +187,31 @@ class AudioExtractor:
             logger.info(f"Compressing audio by ratio {compression_ratio:.2f} for job {job_id}")
             
             if compression_ratio < 0.5:
-                # Aggressive compression needed - reduce sample rate
-                new_sample_rate = max(8000, int(audio.frame_rate * compression_ratio * 1.2))
-                logger.info(f"Reducing sample rate to {new_sample_rate}Hz for job {job_id}")
-                audio = audio.set_frame_rate(new_sample_rate)
+                # Aggressive compression needed - use alternative compression methods instead of reducing sample rate below 16kHz
+                if audio.frame_rate > 16000:
+                    # Only reduce sample rate if currently above 16kHz
+                    new_sample_rate = max(16000, int(audio.frame_rate * 0.5))
+                    logger.info(f"Reducing sample rate to {new_sample_rate}Hz for job {job_id} (minimum 16kHz enforced)")
+                    audio = audio.set_frame_rate(new_sample_rate)
+                else:
+                    logger.info(f"Cannot reduce sample rate below 16kHz for job {job_id}, using alternative compression")
+                
+                # Apply more aggressive dynamic range compression instead of reducing sample rate
+                logger.info(f"Applying aggressive dynamic range compression for job {job_id}")
+                audio = audio.compress_dynamic_range(threshold=-25.0, ratio=8.0, attack=2.0, release=20.0)
+                
             elif compression_ratio < 0.8:
-                # Moderate compression - slight sample rate reduction
-                new_sample_rate = max(12000, int(audio.frame_rate * 0.75))
-                logger.info(f"Reducing sample rate to {new_sample_rate}Hz for job {job_id}")
-                audio = audio.set_frame_rate(new_sample_rate)
+                # Moderate compression - slight sample rate reduction but maintain minimum 16kHz
+                if audio.frame_rate > 16000:
+                    new_sample_rate = max(16000, int(audio.frame_rate * 0.75))
+                    logger.info(f"Reducing sample rate to {new_sample_rate}Hz for job {job_id} (minimum 16kHz enforced)")
+                    audio = audio.set_frame_rate(new_sample_rate)
+                else:
+                    logger.info(f"Sample rate already at minimum 16kHz for job {job_id}, skipping reduction")
             
-            # Apply dynamic range compression to reduce file size
-            audio = audio.compress_dynamic_range(threshold=-20.0, ratio=4.0, attack=5.0, release=50.0)
+            # Apply standard dynamic range compression to reduce file size (if not already applied aggressively)
+            if compression_ratio >= 0.5:
+                audio = audio.compress_dynamic_range(threshold=-20.0, ratio=4.0, attack=5.0, release=50.0)
             
             # Final size check
             final_size = self._estimate_wav_size(audio)
@@ -296,7 +309,7 @@ class AudioExtractor:
         except Exception:
             return False
     
-    def split_audio_if_needed(self, audio_path: str, job_id: str, max_chunk_size_mb: float = 9.0) -> list:
+    def split_audio_if_needed(self, audio_path: str, job_id: str, max_chunk_size_mb: float = 8.0) -> list:
         """
         Split audio file into chunks if it exceeds size limit for STT
         
@@ -324,8 +337,10 @@ class AudioExtractor:
             total_duration_ms = len(audio)
             estimated_total_size_mb = self._estimate_wav_size(audio)
             
-            # Calculate how many chunks we need
-            num_chunks = max(1, int(estimated_total_size_mb / max_chunk_size_mb) + 1)
+            # Calculate how many chunks we need - be more conservative
+            # Use 1.5x safety margin to account for processing variations
+            safety_margin = 1.5
+            num_chunks = max(1, int((estimated_total_size_mb * safety_margin) / max_chunk_size_mb) + 1)
             chunk_duration_ms = total_duration_ms // num_chunks
             
             # Ensure minimum chunk duration (30 seconds) for quality
@@ -340,23 +355,117 @@ class AudioExtractor:
                 chunk_end = min(chunk_start + chunk_duration_ms, len(audio))
                 chunk = audio[chunk_start:chunk_end]
                 
+                # Skip empty chunks (can happen at audio boundaries)
+                if len(chunk) == 0:
+                    logger.warning(f"Skipping empty chunk {i} for job {job_id}")
+                    continue
+                
                 # Process each chunk for STT optimization
                 processed_chunk = self._process_for_stt(chunk, f"{job_id}_chunk_{i}", max_chunk_size_mb)
+                
+                # Validate processed chunk before saving
+                if len(processed_chunk) == 0:
+                    logger.warning(f"Skipping chunk {i} - became empty after processing for job {job_id}")
+                    continue
+                
+                # Ensure minimum chunk duration (5 seconds) after processing
+                min_processed_duration_ms = 5 * 1000
+                if len(processed_chunk) < min_processed_duration_ms:
+                    logger.warning(f"Skipping chunk {i} - too short ({len(processed_chunk)/1000:.1f}s) after processing for job {job_id}")
+                    continue
+                
+                # Check estimated size before export - Google has 10MB limit
+                estimated_chunk_size_mb = self._estimate_wav_size(processed_chunk)
+                google_limit_mb = 10.0  # Google Cloud STT limit
+                
+                if estimated_chunk_size_mb > google_limit_mb:
+                    logger.warning(f"Chunk {i} too large ({estimated_chunk_size_mb:.2f}MB > {google_limit_mb}MB), applying additional compression for job {job_id}")
+                    # Apply more aggressive compression
+                    processed_chunk = self._compress_audio(processed_chunk, f"{job_id}_chunk_{i}", google_limit_mb * 0.9)
+                    
+                    # Re-check size after compression
+                    estimated_chunk_size_mb = self._estimate_wav_size(processed_chunk)
+                    if estimated_chunk_size_mb > google_limit_mb:
+                        logger.error(f"Chunk {i} still too large ({estimated_chunk_size_mb:.2f}MB) after compression, splitting further for job {job_id}")
+                        # Split this chunk further
+                        sub_chunks = self._split_oversized_chunk(processed_chunk, f"{job_id}_chunk_{i}", google_limit_mb * 0.9)
+                        
+                        # Export sub-chunks
+                        for sub_i, sub_chunk in enumerate(sub_chunks):
+                            sub_chunk_filename = f"{job_id}_chunk_{i:03d}_{sub_i:03d}.wav"
+                            sub_chunk_path = self.output_path / sub_chunk_filename
+                            sub_chunk.export(str(sub_chunk_path), format="wav")
+                            
+                            sub_chunk_size_mb = sub_chunk_path.stat().st_size / (1024 * 1024)
+                            logger.info(f"Sub-chunk {i}-{sub_i}: {sub_chunk_size_mb:.2f}MB, duration: {len(sub_chunk)/1000:.1f}s")
+                            chunks.append(str(sub_chunk_path))
+                        continue
                 
                 chunk_filename = f"{job_id}_chunk_{i:03d}.wav"
                 chunk_path = self.output_path / chunk_filename
                 
                 processed_chunk.export(str(chunk_path), format="wav")
                 
-                # Verify chunk size
+                # Verify chunk size after export
                 chunk_size_mb = chunk_path.stat().st_size / (1024 * 1024)
-                logger.info(f"Chunk {i}: {chunk_size_mb:.2f}MB, duration: {len(processed_chunk)/1000:.1f}s")
+                chunk_duration_s = len(processed_chunk) / 1000
                 
+                # Final validation - remove invalid chunks
+                if chunk_size_mb <= 0.001 or chunk_duration_s <= 0.1:
+                    logger.warning(f"Removing invalid chunk {i} (size: {chunk_size_mb:.3f}MB, duration: {chunk_duration_s:.1f}s) for job {job_id}")
+                    chunk_path.unlink(missing_ok=True)
+                    continue
+                
+                # Final Google limit check
+                if chunk_size_mb > google_limit_mb:
+                    logger.error(f"Chunk {i} exceeds Google limit: {chunk_size_mb:.2f}MB > {google_limit_mb}MB for job {job_id}")
+                    chunk_path.unlink(missing_ok=True)
+                    continue
+                
+                logger.info(f"Chunk {i}: {chunk_size_mb:.2f}MB, duration: {chunk_duration_s:.1f}s")
                 chunks.append(str(chunk_path))
+            
+            # Ensure we have at least one valid chunk
+            if not chunks:
+                logger.error(f"No valid chunks created for job {job_id} - falling back to original file")
+                return [audio_path]
             
             logger.info(f"Audio split into {len(chunks)} optimized chunks for job {job_id}")
             return chunks
             
         except Exception as e:
             logger.error(f"Audio splitting failed for job {job_id}: {str(e)}")
-            raise Exception(f"Audio splitting failed: {str(e)}") 
+            raise Exception(f"Audio splitting failed: {str(e)}")
+    
+    def _split_oversized_chunk(self, audio: AudioSegment, chunk_id: str, target_size_mb: float) -> List[AudioSegment]:
+        """Split a chunk that's too large into smaller sub-chunks"""
+        try:
+            current_size_mb = self._estimate_wav_size(audio)
+            duration_ms = len(audio)
+            
+            # Calculate how many sub-chunks we need
+            num_sub_chunks = max(2, int(current_size_mb / target_size_mb) + 1)
+            sub_chunk_duration_ms = duration_ms // num_sub_chunks
+            
+            # Ensure minimum sub-chunk duration
+            min_sub_chunk_duration_ms = 10 * 1000  # 10 seconds minimum
+            sub_chunk_duration_ms = max(sub_chunk_duration_ms, min_sub_chunk_duration_ms)
+            
+            logger.info(f"Splitting oversized chunk {chunk_id} ({current_size_mb:.2f}MB) into {num_sub_chunks} sub-chunks")
+            
+            sub_chunks = []
+            for i in range(0, len(audio), sub_chunk_duration_ms):
+                end_pos = min(i + sub_chunk_duration_ms, len(audio))
+                sub_chunk = audio[i:end_pos]
+                
+                if len(sub_chunk) >= min_sub_chunk_duration_ms:
+                    sub_chunks.append(sub_chunk)
+                else:
+                    logger.warning(f"Skipping very short sub-chunk ({len(sub_chunk)/1000:.1f}s) for {chunk_id}")
+            
+            return sub_chunks
+            
+        except Exception as e:
+            logger.error(f"Failed to split oversized chunk {chunk_id}: {str(e)}")
+            # Return original chunk as fallback
+            return [audio] 

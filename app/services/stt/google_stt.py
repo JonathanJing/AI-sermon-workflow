@@ -84,8 +84,23 @@ class GoogleSTTService:
             chunk_files = list(audio_path.parent.glob(chunk_pattern))
             
             if chunk_files:
-                # Sort by chunk number
-                chunk_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
+                # Sort by chunk number, handling both chunk_001.wav and chunk_001_000.wav patterns
+                def sort_key(file_path):
+                    stem = file_path.stem
+                    parts = stem.split('_')
+                    if len(parts) >= 3:
+                        try:
+                            # Handle chunk_001_000.wav pattern (sub-chunks)
+                            if len(parts) >= 4 and parts[-2].isdigit() and parts[-1].isdigit():
+                                return (int(parts[-2]), int(parts[-1]))
+                            # Handle chunk_001.wav pattern (regular chunks)
+                            elif parts[-1].isdigit():
+                                return (int(parts[-1]), 0)
+                        except ValueError:
+                            pass
+                    return (0, 0)
+                
+                chunk_files.sort(key=sort_key)
                 return [str(f) for f in chunk_files]
             else:
                 # No chunks found, return original file
@@ -111,7 +126,38 @@ class GoogleSTTService:
                 logger.info(f"Processing chunk {i+1}/{len(chunk_files)}: {chunk_file}")
                 
                 try:
+                    # Validate chunk file before processing
+                    chunk_path = Path(chunk_file)
+                    if not chunk_path.exists():
+                        logger.error(f"Chunk file does not exist: {chunk_file}")
+                        continue
+                    
+                    # Check file size
+                    chunk_size_mb = chunk_path.stat().st_size / (1024 * 1024)
+                    if chunk_size_mb <= 0.001:  # Less than 1KB
+                        logger.warning(f"Skipping tiny chunk {i+1} (size: {chunk_size_mb:.3f}MB): {chunk_file}")
+                        continue
+                    
+                    # Check audio duration
+                    try:
+                        from pydub import AudioSegment
+                        audio_segment = AudioSegment.from_wav(chunk_file)
+                        chunk_duration_seconds = len(audio_segment) / 1000.0
+                        
+                        if chunk_duration_seconds <= 0.1:  # Less than 100ms
+                            logger.warning(f"Skipping very short chunk {i+1} (duration: {chunk_duration_seconds:.1f}s): {chunk_file}")
+                            continue
+                            
+                    except Exception as e:
+                        logger.warning(f"Could not validate chunk {i+1} audio properties: {str(e)}")
+                        # Continue processing anyway
+                    
                     chunk_result, chunk_metadata = self._transcribe_single_file(chunk_file, f"{job_id}_chunk_{i}")
+                    
+                    # Skip chunks with no transcription results
+                    if not chunk_result.entries:
+                        logger.warning(f"Chunk {i+1} produced no transcription results: {chunk_file}")
+                        continue
                     
                     # Adjust timing for chunk offset
                     chunk_offset = total_duration
@@ -129,13 +175,16 @@ class GoogleSTTService:
                         total_confidence += chunk_result.confidence
                         confidence_count += 1
                     
+                    logger.info(f"Successfully processed chunk {i+1}: {len(chunk_result.entries)} entries, duration: {chunk_result.total_duration:.1f}s")
+                    
                 except Exception as e:
                     logger.error(f"Failed to process chunk {i+1} for job {job_id}: {str(e)}")
                     # Continue with other chunks
                     continue
             
             if not all_entries:
-                raise Exception("No chunks were successfully transcribed")
+                logger.error(f"No chunks were successfully transcribed for job {job_id}. Total chunks attempted: {len(chunk_files)}")
+                raise Exception(f"No chunks were successfully transcribed out of {len(chunk_files)} chunks")
             
             # Calculate overall confidence
             overall_confidence = total_confidence / confidence_count if confidence_count > 0 else None
