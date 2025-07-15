@@ -88,6 +88,26 @@ def quick_stt_test():
         for i, entry in enumerate(transcript_result.entries):
             logger.info(f"  {i+1}. [{entry.start_time:.1f}s-{entry.end_time:.1f}s] {entry.text}")
         
+        # Check for subtitle files
+        srt_path = metadata.get("srt_path")
+        vtt_path = metadata.get("vtt_path")
+        
+        if srt_path and Path(srt_path).exists():
+            logger.info(f"✅ SRT file created: {srt_path}")
+            
+            # Show first few lines of SRT
+            with open(srt_path, 'r', encoding='utf-8') as f:
+                srt_content = f.read()
+                logger.info("SRT content (first 300 chars):")
+                logger.info(srt_content[:300])
+        else:
+            logger.warning("⚠️ No SRT file created")
+        
+        if vtt_path and Path(vtt_path).exists():
+            logger.info(f"✅ VTT file created: {vtt_path}")
+        else:
+            logger.warning("⚠️ No VTT file created")
+        
         # 3. Cleanup
         logger.info("Step 3: Cleaning up...")
         if chunk_path.exists():

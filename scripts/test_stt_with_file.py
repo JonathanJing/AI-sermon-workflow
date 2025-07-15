@@ -109,6 +109,20 @@ def test_stt_with_file(audio_file: str, job_id: str = "file_test", max_duration_
             confidence_str = f" (conf: {entry.confidence:.3f})" if entry.confidence else ""
             logger.info(f"  {i+1}. [{entry.start_time:.1f}s-{entry.end_time:.1f}s] {entry.text}{confidence_str}")
         
+        # Check for subtitle files
+        srt_path = metadata.get("srt_path")
+        vtt_path = metadata.get("vtt_path")
+        
+        if srt_path and Path(srt_path).exists():
+            logger.info(f"✅ SRT file created: {srt_path}")
+        else:
+            logger.warning("⚠️ No SRT file created")
+        
+        if vtt_path and Path(vtt_path).exists():
+            logger.info(f"✅ VTT file created: {vtt_path}")
+        else:
+            logger.warning("⚠️ No VTT file created")
+        
         # 4. Save results
         logger.info("Step 4: Saving results...")
         
@@ -141,6 +155,10 @@ def test_stt_with_file(audio_file: str, job_id: str = "file_test", max_duration_
         logger.info(f"Results saved:")
         logger.info(f"  - Processed audio: {processed_path}")
         logger.info(f"  - Transcript JSON: {transcript_json_path}")
+        if srt_path:
+            logger.info(f"  - SRT subtitles: {srt_path}")
+        if vtt_path:
+            logger.info(f"  - VTT subtitles: {vtt_path}")
         
         # 5. Cleanup (optional)
         cleanup = input("Clean up processed files? (y/n): ").lower() == 'y'

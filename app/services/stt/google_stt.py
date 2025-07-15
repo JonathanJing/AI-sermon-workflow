@@ -5,9 +5,18 @@ from typing import List, Dict, Any, Tuple
 from pathlib import Path
 from google.cloud import speech_v1p1beta1 as speech
 from google.api_core import exceptions as gcp_exceptions
+from google.cloud import storage
+# Optional GCS import - only needed for long audio files
+# try:
+#     from google.cloud import storage
+#     GCS_AVAILABLE = True
+# except ImportError:
+#     storage = None
+#     GCS_AVAILABLE = False
 from app.config import settings
 from app.models import TranscriptEntry, TranscriptResult
 from app.services.phrase_manager import PhraseManager
+from app.services.subtitles.builder import SubtitleBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +33,12 @@ class GoogleSTTService:
         # Initialize phrase manager
         self.phrase_manager = PhraseManager()
         
+        # Initialize subtitle builder
+        self.subtitle_builder = SubtitleBuilder()
+        
+        # Initialize storage client for GCS uploads
+        self.storage_client = None
+        
         # Initialize client if credentials are available
         self._initialize_client()
     
@@ -36,9 +51,21 @@ class GoogleSTTService:
             self.client = speech.SpeechClient()
             logger.info("Google Cloud Speech client initialized successfully")
             
+            # Initialize storage client for GCS uploads
+            if GCS_AVAILABLE and settings.google_cloud.bucket_name:
+                self.storage_client = storage.Client()
+                logger.info("Google Cloud Storage client initialized successfully")
+            else:
+                if not GCS_AVAILABLE:
+                    logger.warning("Google Cloud Storage not available - long audio files (>60s) will fail. Install with: pip install google-cloud-storage")
+                elif not settings.google_cloud.bucket_name:
+                    logger.warning("GCS bucket name not configured - long audio files may fail")
+                self.storage_client = None
+            
         except Exception as e:
-            logger.error(f"Failed to initialize Google Cloud Speech client: {str(e)}")
+            logger.error(f"Failed to initialize Google Cloud clients: {str(e)}")
             self.client = None
+            self.storage_client = None
     
     def transcribe_audio(self, audio_file_path: str, job_id: str) -> Tuple[TranscriptResult, Dict[str, Any]]:
         """
@@ -200,6 +227,16 @@ class GoogleSTTService:
             # Save combined transcript
             transcript_path = self._save_transcript(transcript_result, job_id)
             
+            # Generate subtitle files
+            srt_path = None
+            vtt_path = None
+            try:
+                srt_path, vtt_path, subtitle_metadata = self.subtitle_builder.create_subtitles(transcript_result, job_id)
+                logger.info(f"Subtitle files created: {srt_path}, {vtt_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create subtitle files for job {job_id}: {str(e)}")
+                # Continue without subtitles if creation fails
+            
             # Create processing metadata
             processing_metadata = {
                 "transcription_method": "chunked",
@@ -207,6 +244,8 @@ class GoogleSTTService:
                 "chunks_successful": len([e for e in all_entries if e]),
                 "file_size_mb": sum(Path(f).stat().st_size for f in chunk_files) / (1024 * 1024),
                 "transcript_path": transcript_path,
+                "srt_path": srt_path,
+                "vtt_path": vtt_path,
                 "estimated_cost_usd": total_cost,
                 "confidence_score": overall_confidence,
                 "language_detected": self.config.language_code,
@@ -247,36 +286,78 @@ class GoogleSTTService:
                 detected_sample_rate = 16000
                 audio_duration_seconds = 0  # If we can't detect duration, assume it's short
             
-            # Determine whether to use long-running operation
-            # Google's synchronous API has a 60-second limit for audio duration
-            # Also use long-running for very large files (>10MB)
+            # Determine transcription method based on Google STT limits
+            # Synchronous API: < 60 seconds and < 10MB
+            # Long-running API with inline audio: < 60 seconds but > 10MB
+            # Long-running API with GCS URI: > 60 seconds (duration limit for inline audio)
+            
+            use_gcs = audio_duration_seconds > 60  # Google's inline audio duration limit
             use_long_running = audio_duration_seconds > 60 or file_size_mb > 10
-            
-            with open(audio_file_path, 'rb') as audio_file:
-                content = audio_file.read()
-            
-            # Create audio object
-            audio = speech.RecognitionAudio(content=content)
             
             # Create recognition config with detected sample rate
             config = self._create_recognition_config(sample_rate=detected_sample_rate)
             
-            # Perform transcription
-            if use_long_running:
-                logger.info(f"Using long-running operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
+            if use_gcs:
+                # Upload to GCS and use URI for long audio files
+                if not GCS_AVAILABLE:
+                    raise Exception("Long audio file (>60s) requires Google Cloud Storage. Install with: pip install google-cloud-storage")
+                
+                if not self.storage_client or not settings.google_cloud.bucket_name:
+                    raise Exception("GCS not configured but required for long audio files (>60s). Set GCS_BUCKET_NAME environment variable.")
+                
+                logger.info(f"Uploading to GCS for long audio file {job_id} (duration: {audio_duration_seconds:.1f}s)")
+                gcs_uri = self._upload_to_gcs(audio_file_path, job_id)
+                
+                # Create audio object with GCS URI
+                audio = speech.RecognitionAudio(uri=gcs_uri)
+                
+                # Use long-running operation with GCS URI
+                logger.info(f"Using long-running operation with GCS URI for {job_id}")
                 response = self._transcribe_long_running(config, audio, job_id)
+                
+                # Clean up GCS file after transcription
+                self._cleanup_gcs_file(gcs_uri)
+                
             else:
-                logger.info(f"Using synchronous operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
-                response = self._transcribe_synchronous(config, audio, job_id)
+                # Use inline audio for shorter files
+                with open(audio_file_path, 'rb') as audio_file:
+                    content = audio_file.read()
+                
+                # Create audio object with inline content
+                audio = speech.RecognitionAudio(content=content)
+                
+                # Perform transcription
+                if use_long_running:
+                    logger.info(f"Using long-running operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
+                    response = self._transcribe_long_running(config, audio, job_id)
+                else:
+                    logger.info(f"Using synchronous operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
+                    response = self._transcribe_synchronous(config, audio, job_id)
             
             # Process results
             transcript_result = self._process_transcription_results(response, job_id)
+            
+            # Save transcript JSON
+            transcript_path = self._save_transcript(transcript_result, job_id)
+            
+            # Generate subtitle files
+            srt_path = None
+            vtt_path = None
+            try:
+                srt_path, vtt_path, subtitle_metadata = self.subtitle_builder.create_subtitles(transcript_result, job_id)
+                logger.info(f"Subtitle files created: {srt_path}, {vtt_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create subtitle files for job {job_id}: {str(e)}")
+                # Continue without subtitles if creation fails
             
             # Calculate processing metadata
             processing_metadata = {
                 "transcription_method": "long_running" if use_long_running else "synchronous",
                 "file_size_mb": file_size_mb,
                 "audio_duration_seconds": audio_duration_seconds,
+                "transcript_path": transcript_path,
+                "srt_path": srt_path,
+                "vtt_path": vtt_path,
                 "estimated_cost_usd": self._estimate_cost(file_size_mb, transcript_result.total_duration),
                 "confidence_score": transcript_result.confidence,
                 "language_detected": transcript_result.language,
@@ -364,6 +445,59 @@ class GoogleSTTService:
         except Exception as e:
             logger.error(f"Long-running operation failed for job {job_id}: {str(e)}")
             raise Exception(f"Long-running operation failed: {str(e)}")
+    
+    def _upload_to_gcs(self, audio_file_path: str, job_id: str) -> str:
+        """Upload audio file to Google Cloud Storage and return URI"""
+        try:
+            if not GCS_AVAILABLE:
+                raise Exception("Google Cloud Storage not available")
+            
+            if not self.storage_client or not settings.google_cloud.bucket_name:
+                raise Exception("GCS client or bucket not configured")
+            
+            # Create unique blob name
+            audio_filename = Path(audio_file_path).name
+            blob_name = f"stt-temp/{job_id}/{audio_filename}"
+            
+            # Get bucket and create blob
+            bucket = self.storage_client.bucket(settings.google_cloud.bucket_name)
+            blob = bucket.blob(blob_name)
+            
+            # Upload file
+            logger.info(f"Uploading {audio_file_path} to gs://{settings.google_cloud.bucket_name}/{blob_name}")
+            blob.upload_from_filename(audio_file_path)
+            
+            # Return GCS URI
+            gcs_uri = f"gs://{settings.google_cloud.bucket_name}/{blob_name}"
+            logger.info(f"Upload completed: {gcs_uri}")
+            
+            return gcs_uri
+            
+        except Exception as e:
+            logger.error(f"Failed to upload to GCS for job {job_id}: {str(e)}")
+            raise Exception(f"GCS upload failed: {str(e)}")
+    
+    def _cleanup_gcs_file(self, gcs_uri: str):
+        """Clean up temporary GCS file"""
+        try:
+            if not GCS_AVAILABLE or not self.storage_client or not gcs_uri.startswith("gs://"):
+                return
+            
+            # Parse GCS URI
+            parts = gcs_uri.replace("gs://", "").split("/", 1)
+            bucket_name = parts[0]
+            blob_name = parts[1]
+            
+            # Delete blob
+            bucket = self.storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            blob.delete()
+            
+            logger.info(f"Cleaned up GCS file: {gcs_uri}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to cleanup GCS file {gcs_uri}: {str(e)}")
+            # Don't raise exception for cleanup failures
     
     def _process_transcription_results(self, response: speech.RecognizeResponse, job_id: str) -> TranscriptResult:
         """Process transcription results into structured format"""
@@ -557,6 +691,8 @@ class GoogleSTTService:
             return {
                 "status": "healthy",
                 "client_initialized": True,
+                "gcs_available": GCS_AVAILABLE,
+                "gcs_configured": bool(self.storage_client and settings.google_cloud.bucket_name),
                 "language_code": self.config.language_code,
                 "model": self.config.model,
                 "cost_limit_usd": self.config.cost_limit_usd

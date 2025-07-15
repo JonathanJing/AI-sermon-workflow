@@ -216,6 +216,22 @@ def test_stt_conversion(chunk_path: str, job_id: str = "test_stt") -> Dict[str, 
         for i, entry in enumerate(result["transcript_entries"]):
             logger.info(f"  Entry {i+1}: [{entry['start_time']:.1f}s-{entry['end_time']:.1f}s] {entry['text']}")
         
+        # Check for subtitle files
+        srt_path = processing_metadata.get("srt_path")
+        vtt_path = processing_metadata.get("vtt_path")
+        
+        if srt_path and Path(srt_path).exists():
+            logger.info(f"✅ SRT file created: {srt_path}")
+            result["srt_file"] = srt_path
+        else:
+            logger.warning("⚠️ No SRT file created")
+        
+        if vtt_path and Path(vtt_path).exists():
+            logger.info(f"✅ VTT file created: {vtt_path}")
+            result["vtt_file"] = vtt_path
+        else:
+            logger.warning("⚠️ No VTT file created")
+        
         return result
         
     except Exception as e:

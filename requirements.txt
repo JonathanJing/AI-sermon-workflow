@@ -7,6 +7,9 @@ pydantic-settings==2.1.0
 # Google Cloud Speech-to-Text
 google-cloud-speech==2.27.0
 
+# Google Cloud Storage
+google-cloud-storage>=3.2.0
+
 # Media processing
 moviepy==1.0.3
 pydub==0.25.1

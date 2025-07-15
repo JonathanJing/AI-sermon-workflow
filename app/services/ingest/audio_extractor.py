@@ -344,8 +344,19 @@ class AudioExtractor:
             chunk_duration_ms = total_duration_ms // num_chunks
             
             # Ensure minimum chunk duration (30 seconds) for quality
+            # But also ensure maximum chunk duration (60 seconds) for Google STT inline limit
             min_chunk_duration_ms = 30 * 1000
+            max_chunk_duration_ms = 60 * 1000  # Google STT inline audio limit
+            
             chunk_duration_ms = max(chunk_duration_ms, min_chunk_duration_ms)
+            chunk_duration_ms = min(chunk_duration_ms, max_chunk_duration_ms)
+            
+            # If chunks would be too long, increase number of chunks
+            if chunk_duration_ms >= max_chunk_duration_ms:
+                # Recalculate to ensure chunks are under 60 seconds
+                num_chunks = max(num_chunks, int(total_duration_ms / max_chunk_duration_ms) + 1)
+                chunk_duration_ms = total_duration_ms // num_chunks
+                chunk_duration_ms = max(chunk_duration_ms, min_chunk_duration_ms)
             
             logger.info(f"Creating {num_chunks} chunks of ~{chunk_duration_ms/1000:.1f}s each for job {job_id}")
             
