@@ -18,6 +18,70 @@ class SubtitleBuilder:
         self.output_path = Path(settings.storage.local_path) / "processed"
         self.output_path.mkdir(parents=True, exist_ok=True)
     
+    def append_chunk_to_srt(self, chunk_entries: List[TranscriptEntry], job_id: str, srt_path: Optional[str] = None) -> str:
+        """
+        Append a chunk's entries to an existing SRT file or create a new one
+        
+        Args:
+            chunk_entries: List of transcript entries for this chunk
+            job_id: Unique job identifier
+            srt_path: Path to existing SRT file (if None, creates new file)
+            
+        Returns:
+            Path to the SRT file
+        """
+        try:
+            # Generate file path if not provided
+            if srt_path is None:
+                srt_filename = f"{job_id}_subtitles.srt"
+                srt_path = str(self.output_path / srt_filename)
+            
+            # Process entries into subtitle format
+            subtitle_entries = self._process_transcript_entries(chunk_entries, job_id)
+            
+            # Determine starting position for new entries
+            start_position = 1
+            if Path(srt_path).exists():
+                # Read existing file to determine last position
+                with open(srt_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # Find the last position number
+                    import re
+                    positions = re.findall(r'^(\d+)$', content, re.MULTILINE)
+                    if positions:
+                        start_position = int(positions[-1]) + 1
+            
+            # Create SRT content for this chunk
+            srt_content = []
+            for i, entry in enumerate(subtitle_entries):
+                position = start_position + i
+                start_time = self._format_srt_time(entry.start_time)
+                end_time = self._format_srt_time(entry.end_time)
+                
+                srt_content.append(f"{position}")
+                srt_content.append(f"{start_time} --> {end_time}")
+                srt_content.append(entry.text)
+                srt_content.append("")  # Empty line between entries
+            
+            # Append to file
+            with open(srt_path, 'a', encoding='utf-8') as f:
+                f.write('\n'.join(srt_content))
+            
+            logger.info(f"Appended {len(subtitle_entries)} entries to SRT file: {srt_path}")
+            return srt_path
+            
+        except Exception as e:
+            logger.error(f"Failed to append chunk to SRT for job {job_id}: {str(e)}")
+            raise Exception(f"Failed to append chunk to SRT: {str(e)}")
+    
+    def _format_srt_time(self, seconds: float) -> str:
+        """Format time in seconds to SRT format (HH:MM:SS,mmm)"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millisecs = int((seconds % 1) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
+
     def create_subtitles(self, transcript_result: TranscriptResult, job_id: str) -> Tuple[str, str, Dict[str, Any]]:
         """
         Create subtitle files from transcript

@@ -146,6 +146,10 @@ class GoogleSTTService:
             total_duration = 0.0
             processing_methods = []
             
+            # Initialize incremental SRT file
+            srt_path = None
+            vtt_path = None
+            
             logger.info(f"Transcribing {len(chunk_files)} chunks for job {job_id}")
             
             for i, chunk_file in enumerate(chunk_files):
@@ -187,10 +191,25 @@ class GoogleSTTService:
                     
                     # Adjust timing for chunk offset
                     chunk_offset = total_duration
+                    adjusted_entries = []
                     for entry in chunk_result.entries:
-                        entry.start_time += chunk_offset
-                        entry.end_time += chunk_offset
-                        all_entries.append(entry)
+                        # Create a copy with adjusted timing
+                        adjusted_entry = TranscriptEntry(
+                            start_time=entry.start_time + chunk_offset,
+                            end_time=entry.end_time + chunk_offset,
+                            text=entry.text,
+                            confidence=entry.confidence
+                        )
+                        adjusted_entries.append(adjusted_entry)
+                        all_entries.append(adjusted_entry)
+                    
+                    # Append to incremental SRT file
+                    try:
+                        srt_path = self.subtitle_builder.append_chunk_to_srt(adjusted_entries, job_id, srt_path)
+                        logger.info(f"Appended chunk {i+1} to SRT file: {srt_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to append chunk {i+1} to SRT file: {str(e)}")
+                        # Continue processing even if SRT append fails
                     
                     # Update totals
                     total_duration += chunk_result.total_duration
@@ -226,15 +245,24 @@ class GoogleSTTService:
             # Save combined transcript
             transcript_path = self._save_transcript(transcript_result, job_id)
             
-            # Generate subtitle files
-            srt_path = None
-            vtt_path = None
-            try:
-                srt_path, vtt_path, subtitle_metadata = self.subtitle_builder.create_subtitles(transcript_result, job_id)
-                logger.info(f"Subtitle files created: {srt_path}, {vtt_path}")
-            except Exception as e:
-                logger.warning(f"Failed to create subtitle files for job {job_id}: {str(e)}")
-                # Continue without subtitles if creation fails
+            # Generate VTT file from the incremental SRT file if it exists
+            if srt_path and Path(srt_path).exists():
+                try:
+                    # Generate VTT file from the existing SRT
+                    vtt_path = self._convert_srt_to_vtt(srt_path, job_id)
+                    logger.info(f"Subtitle files available: {srt_path}, {vtt_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to create VTT file from SRT for job {job_id}: {str(e)}")
+                    vtt_path = None
+            else:
+                # Fallback to creating subtitle files from complete transcript
+                logger.info("No incremental SRT file available, creating subtitle files from complete transcript")
+                try:
+                    srt_path, vtt_path, subtitle_metadata = self.subtitle_builder.create_subtitles(transcript_result, job_id)
+                    logger.info(f"Subtitle files created: {srt_path}, {vtt_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to create subtitle files for job {job_id}: {str(e)}")
+                    # Continue without subtitles if creation fails
             
             # Create processing metadata
             processing_metadata = {
@@ -260,7 +288,72 @@ class GoogleSTTService:
             
         except Exception as e:
             logger.error(f"Chunked transcription failed for job {job_id}: {str(e)}")
+            
+            # Try to preserve partial results if we have any
+            if all_entries:
+                logger.warning(f"Preserving partial results for job {job_id}: {len(all_entries)} entries processed")
+                
+                # Calculate overall confidence for partial results
+                overall_confidence = total_confidence / confidence_count if confidence_count > 0 else None
+                
+                # Create partial transcript result
+                partial_transcript = TranscriptResult(
+                    entries=all_entries,
+                    total_duration=total_duration,
+                    language=self.config.language_code,
+                    confidence=overall_confidence
+                )
+                
+                # Try to save partial transcript
+                try:
+                    transcript_path = self._save_transcript(partial_transcript, f"{job_id}_partial")
+                    logger.info(f"Partial transcript saved: {transcript_path}")
+                except Exception as save_error:
+                    logger.error(f"Failed to save partial transcript: {str(save_error)}")
+                    transcript_path = None
+                
+                # Create partial processing metadata
+                partial_metadata = {
+                    "transcription_method": "chunked_partial",
+                    "chunks_attempted": len(chunk_files),
+                    "chunks_successful": len(all_entries),
+                    "transcript_path": transcript_path,
+                    "srt_path": srt_path,
+                    "vtt_path": vtt_path,
+                    "estimated_cost_usd": total_cost,
+                    "confidence_score": overall_confidence,
+                    "language_detected": self.config.language_code,
+                    "total_alternatives": len(all_entries),
+                    "processing_methods": list(set(processing_methods)),
+                    "partial_result": True,
+                    "failure_reason": str(e)
+                }
+                
+                logger.warning(f"Returning partial results for job {job_id}: {len(all_entries)} entries")
+                return partial_transcript, partial_metadata
+            
             raise Exception(f"Chunked transcription failed: {str(e)}")
+    
+    def _convert_srt_to_vtt(self, srt_path: str, job_id: str) -> str:
+        """Convert SRT file to VTT format"""
+        try:
+            import pysubs2
+            
+            # Load SRT file
+            subs = pysubs2.load(srt_path)
+            
+            # Generate VTT file path
+            vtt_path = srt_path.replace("_subtitles.srt", "_subtitles.vtt")
+            
+            # Save as VTT
+            subs.save(vtt_path, format_="vtt")
+            
+            logger.info(f"Converted SRT to VTT for job {job_id}: {vtt_path}")
+            return vtt_path
+            
+        except Exception as e:
+            logger.error(f"Failed to convert SRT to VTT for job {job_id}: {str(e)}")
+            raise Exception(f"Failed to convert SRT to VTT: {str(e)}")
     
     def _transcribe_single_file(self, audio_file_path: str, job_id: str) -> Tuple[TranscriptResult, Dict[str, Any]]:
         """Transcribe a single audio file"""
