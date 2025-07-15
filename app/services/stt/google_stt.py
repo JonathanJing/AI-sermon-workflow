@@ -497,7 +497,7 @@ class GoogleSTTService:
                 "transcript_path": transcript_path,
                 "srt_path": srt_path,
                 "vtt_path": vtt_path,
-                "estimated_cost_usd": self._estimate_cost(file_size_mb, transcript_result.total_duration),
+                "estimated_cost_usd": self._estimate_cost(transcript_result.total_duration),
                 "confidence_score": transcript_result.confidence,
                 "language_detected": transcript_result.language,
                 "total_alternatives": len(response.results) if response.results else 0
@@ -713,13 +713,15 @@ class GoogleSTTService:
                         confidence_count += 1
                 else:
                     # Fallback: create single entry without timing
-                    entry = TranscriptEntry(
-                        start_time=0,
-                        end_time=0,
-                        text=alternative.transcript,
-                        confidence=alternative.confidence if hasattr(alternative, 'confidence') else None
-                    )
-                    entries.append(entry)
+                    cleaned_transcript = self._clean_transcript_text(alternative.transcript)
+                    if cleaned_transcript:  # Only add non-empty transcripts
+                        entry = TranscriptEntry(
+                            start_time=0,
+                            end_time=0,
+                            text=cleaned_transcript,
+                            confidence=alternative.confidence if hasattr(alternative, 'confidence') else None
+                        )
+                        entries.append(entry)
                     
                     if alternative.confidence:
                         total_confidence += alternative.confidence
@@ -767,7 +769,7 @@ class GoogleSTTService:
             logger.error(f"Failed to save transcript for job {job_id}: {str(e)}")
             raise Exception(f"Failed to save transcript: {str(e)}")
     
-    def _estimate_cost(self, file_size_mb: float, duration_seconds: float) -> float:
+    def _estimate_cost(self, duration_seconds: float) -> float:
         """Estimate Google Cloud Speech-to-Text cost"""
         try:
             # Google Cloud STT pricing (as of 2024)
@@ -828,13 +830,16 @@ class GoogleSTTService:
             if current_start is None:
                 current_start = self._get_word_start_time(word)
             
-            current_phrase.append(word.word)
+            # Clean the word text before adding to phrase
+            cleaned_word = self._clean_transcript_text(word.word)
+            if cleaned_word:  # Only add non-empty words
+                current_phrase.append(cleaned_word)
             
             # Check for phrase boundary conditions
             should_end_phrase = False
             
-            # 1. Punctuation-based boundary
-            if word.word.endswith(('.', '!', '?', '。', '！', '？', '，', ',')):
+            # 1. Punctuation-based boundary (check cleaned word)
+            if cleaned_word and cleaned_word.endswith(('.', '!', '?', '。', '！', '？', '，', ',')):
                 should_end_phrase = True
             
             # 2. Time-based boundary (significant pause after this word)
@@ -891,6 +896,119 @@ class GoogleSTTService:
         except (ValueError, AttributeError):
             logger.warning(f"Failed to parse time offset: {time_offset_str}")
             return 0.0
+    
+    def _clean_transcript_text(self, text: str) -> str:
+        """
+        Clean transcript text by removing word boundary markers and other artifacts.
+        For Chinese text, also removes spaces since they're not natural in Chinese.
+        
+        Args:
+            text: Raw transcript text
+            
+        Returns:
+            Cleaned text
+        """
+        if not text:
+            return ""
+        
+        # Remove word boundary markers (▁, U+2581)
+        cleaned_text = text.replace("▁", "")
+        
+        # Remove other common speech recognition artifacts
+        cleaned_text = cleaned_text.replace("_", "")
+        
+        # Intelligently handle spaces based on text content
+        if self._contains_chinese_characters(cleaned_text):
+            # For text with Chinese characters, remove spaces between Chinese characters
+            # but preserve spaces around English words
+            cleaned_text = self._clean_chinese_text_spacing(cleaned_text)
+        else:
+            # For non-Chinese text, just clean up multiple spaces
+            cleaned_text = " ".join(cleaned_text.split())
+        
+        return cleaned_text.strip()
+    
+    def _contains_chinese_characters(self, text: str) -> bool:
+        """
+        Check if text contains Chinese characters.
+        
+        Args:
+            text: Text to check
+            
+        Returns:
+            True if text contains Chinese characters
+        """
+        if not text:
+            return False
+        
+        # Check for Chinese character ranges
+        # CJK Unified Ideographs: U+4E00-U+9FFF
+        # CJK Unified Ideographs Extension A: U+3400-U+4DBF
+        # CJK Compatibility Ideographs: U+F900-U+FAFF
+        for char in text:
+            code = ord(char)
+            if (0x4E00 <= code <= 0x9FFF or  # CJK Unified Ideographs
+                0x3400 <= code <= 0x4DBF or  # CJK Extension A
+                0xF900 <= code <= 0xFAFF):   # CJK Compatibility
+                return True
+        return False
+    
+    def _clean_chinese_text_spacing(self, text: str) -> str:
+        """
+        Clean spacing in mixed Chinese/English text.
+        Removes spaces between Chinese characters but preserves spaces around English words.
+        
+        Args:
+            text: Text with mixed Chinese and English content
+            
+        Returns:
+            Text with proper spacing
+        """
+        if not text:
+            return ""
+        
+        result = []
+        i = 0
+        while i < len(text):
+            char = text[i]
+            
+            if char == ' ':
+                # Check if we should preserve this space
+                prev_char = text[i-1] if i > 0 else None
+                next_char = text[i+1] if i < len(text) - 1 else None
+                
+                # Preserve space if it's between non-Chinese characters
+                # or if it's at the boundary between Chinese and non-Chinese
+                if (prev_char and next_char and
+                    (not self._is_chinese_character(prev_char) or 
+                     not self._is_chinese_character(next_char))):
+                    result.append(' ')
+                # Skip spaces between Chinese characters
+            else:
+                result.append(char)
+            
+            i += 1
+        
+        # Clean up multiple spaces
+        return ' '.join(''.join(result).split())
+    
+    def _is_chinese_character(self, char: str) -> bool:
+        """
+        Check if a single character is Chinese.
+        
+        Args:
+            char: Single character to check
+            
+        Returns:
+            True if character is Chinese
+        """
+        if not char:
+            return False
+        
+        code = ord(char)
+        return (0x4E00 <= code <= 0x9FFF or  # CJK Unified Ideographs
+                0x3400 <= code <= 0x4DBF or  # CJK Extension A
+                0xF900 <= code <= 0xFAFF)    # CJK Compatibility
     
     def _get_word_start_time(self, word) -> float:
         """
