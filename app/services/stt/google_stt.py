@@ -3,7 +3,7 @@ import logging
 import json
 from typing import List, Dict, Any, Tuple
 from pathlib import Path
-from google.cloud import speech_v1p1beta1 as speech
+from google.cloud import speech_v2 as speech
 from google.api_core import exceptions as gcp_exceptions
 # Optional GCS import - only needed for long audio files
 try:
@@ -38,6 +38,9 @@ class GoogleSTTService:
         # Initialize storage client for GCS uploads
         self.storage_client = None
         
+        # Initialize recognizer name for v2 API
+        self.recognizer_name = None
+        
         # Initialize client if credentials are available
         self._initialize_client()
     
@@ -65,6 +68,52 @@ class GoogleSTTService:
             logger.error(f"Failed to initialize Google Cloud clients: {str(e)}")
             self.client = None
             self.storage_client = None
+    
+    def _get_or_create_recognizer(self) -> str:
+        """Get or create a recognizer for v2 API"""
+        if self.recognizer_name:
+            return self.recognizer_name
+        
+        try:
+            # Create recognizer name
+            project_id = settings.google_cloud.project_id
+            recognizer_id = "default-recognizer"
+            location = "global"
+            
+            self.recognizer_name = f"projects/{project_id}/locations/{location}/recognizers/{recognizer_id}"
+            
+            # Try to get existing recognizer
+            try:
+                self.client.get_recognizer(name=self.recognizer_name)
+                logger.debug(f"Using existing recognizer: {self.recognizer_name}")
+                return self.recognizer_name
+            except gcp_exceptions.NotFound:
+                # Create new recognizer
+                logger.debug(f"Creating new recognizer: {self.recognizer_name}")
+                
+                # Create default recognition config for the recognizer
+                default_config = self._create_recognition_config(16000)
+                
+                recognizer = speech.Recognizer(
+                    default_recognition_config=default_config
+                )
+                
+                request = speech.CreateRecognizerRequest(
+                    parent=f"projects/{project_id}/locations/{location}",
+                    recognizer_id=recognizer_id,
+                    recognizer=recognizer
+                )
+                
+                operation = self.client.create_recognizer(request=request)
+                # Wait for the operation to complete
+                operation.result()
+                
+                logger.debug(f"Created recognizer: {self.recognizer_name}")
+                return self.recognizer_name
+                
+        except Exception as e:
+            logger.error(f"Failed to get or create recognizer: {str(e)}")
+            raise Exception(f"Failed to get or create recognizer: {str(e)}")
     
     def transcribe_audio(self, audio_file_path: str, job_id: str) -> Tuple[TranscriptResult, Dict[str, Any]]:
         """
@@ -401,12 +450,9 @@ class GoogleSTTService:
                 logger.info(f"Uploading to GCS for long audio file {job_id} (duration: {audio_duration_seconds:.1f}s)")
                 gcs_uri = self._upload_to_gcs(audio_file_path, job_id)
                 
-                # Create audio object with GCS URI
-                audio = speech.RecognitionAudio(uri=gcs_uri)
-                
-                # Use long-running operation with GCS URI
-                logger.info(f"Using long-running operation with GCS URI for {job_id}")
-                response = self._transcribe_long_running(config, audio, job_id)
+                # Use batch operation with GCS URI
+                logger.info(f"Using batch operation with GCS URI for {job_id}")
+                response = self._transcribe_batch(config, gcs_uri, job_id)
                 
                 # Clean up GCS file after transcription
                 self._cleanup_gcs_file(gcs_uri)
@@ -416,16 +462,16 @@ class GoogleSTTService:
                 with open(audio_file_path, 'rb') as audio_file:
                     content = audio_file.read()
                 
-                # Create audio object with inline content
-                audio = speech.RecognitionAudio(content=content)
-                
                 # Perform transcription
                 if use_long_running:
-                    logger.info(f"Using long-running operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
-                    response = self._transcribe_long_running(config, audio, job_id)
+                    # For longer files, upload to GCS and use batch operation
+                    logger.info(f"Using batch operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
+                    gcs_uri = self._upload_to_gcs(audio_file_path, job_id)
+                    response = self._transcribe_batch(config, gcs_uri, job_id)
+                    self._cleanup_gcs_file(gcs_uri)
                 else:
                     logger.info(f"Using synchronous operation for {job_id} (duration: {audio_duration_seconds:.1f}s, file size: {file_size_mb:.2f} MB)")
-                    response = self._transcribe_synchronous(config, audio, job_id)
+                    response = self._transcribe_synchronous(config, content, job_id)
             
             # Process results
             transcript_result = self._process_transcription_results(response, job_id)
@@ -474,45 +520,63 @@ class GoogleSTTService:
         logger.info(f"  - enable_word_time_offsets: {self.config.enable_word_time_offsets}")
         logger.info(f"  - enable_automatic_punctuation: {self.config.enable_automatic_punctuation}")
         
-        # Validate model compatibility with Chinese language
+        # Validate model compatibility with Chinese language and v2 API
         if self.config.language_code.startswith("cmn-") and self.config.model == "video":
-            logger.warning(f"Video model is not supported for Chinese language {self.config.language_code}. Using 'default' model instead.")
-            model_to_use = "default"
+            logger.warning(f"Video model is not supported for Chinese language {self.config.language_code}. Using 'latest_long' model instead.")
+            model_to_use = "latest_long"
+        elif self.config.model == "default":
+            # Map v1 "default" model to v2 "latest_long" model
+            model_to_use = "latest_long"
         else:
             model_to_use = self.config.model
             
         logger.info(f"  - final model to use: {model_to_use}")
         
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=sample_rate,
-            language_code=self.config.language_code,
-            model=model_to_use,  # Use validated model
+        # Configure recognition features
+        features = speech.RecognitionFeatures(
             enable_word_time_offsets=self.config.enable_word_time_offsets,
             enable_automatic_punctuation=self.config.enable_automatic_punctuation,
-            use_enhanced=True,  # Use enhanced model for better accuracy
-            # Enable speaker diarization if needed
-            enable_speaker_diarization=False,  # Can be configurable
-            diarization_speaker_count=2,  # Typical for sermons (pastor + maybe reader)
-            # Additional features
             enable_word_confidence=True,
             profanity_filter=False,
-            speech_contexts=[
-                speech.SpeechContext(
-                    phrases=self.phrase_manager.get_phrases_for_language(self.config.language_code)
-                )
-            ]
+            # Speaker diarization is configured via diarization_config
+            # Currently disabled as it may not be fully supported in v2
+            # diarization_config=speech.SpeakerDiarizationConfig(
+            #     min_speaker_count=1,
+            #     max_speaker_count=2  # Typical for sermons (pastor + maybe reader)
+            # )
         )
+        
+        # Configure speech adaptation context
+        # Note: Phrase adaptation in v2 API has a different structure
+        # For now, we'll skip phrase adaptation and add it later when we have the correct structure
+        adaptation = None
+        
+        config = speech.RecognitionConfig(
+            auto_decoding_config=speech.AutoDetectDecodingConfig(),
+            language_codes=[self.config.language_code],
+            model=model_to_use,  # Use validated model
+            features=features
+        )
+        
+        # Add adaptation if available
+        if adaptation:
+            config.adaptation = adaptation
         
         # Debug: Print the final config
         logger.info(f"Final recognition config: {config}")
         
         return config
     
-    def _transcribe_synchronous(self, config: speech.RecognitionConfig, audio: speech.RecognitionAudio, job_id: str) -> speech.RecognizeResponse:
+    def _transcribe_synchronous(self, config: speech.RecognitionConfig, audio_content: bytes, job_id: str) -> speech.RecognizeResponse:
         """Perform synchronous transcription"""
         try:
-            request = speech.RecognizeRequest(config=config, audio=audio)
+            recognizer = self._get_or_create_recognizer()
+            
+            request = speech.RecognizeRequest(
+                recognizer=recognizer,
+                config=config,
+                content=audio_content
+            )
             response = self.client.recognize(request=request)
             return response
             
@@ -520,13 +584,26 @@ class GoogleSTTService:
             logger.error(f"Google API error for job {job_id}: {str(e)}")
             raise Exception(f"Google API error: {str(e)}")
     
-    def _transcribe_long_running(self, config: speech.RecognitionConfig, audio: speech.RecognitionAudio, job_id: str) -> speech.RecognizeResponse:
-        """Perform long-running transcription"""
+    def _transcribe_batch(self, config: speech.RecognitionConfig, audio_uri: str, job_id: str) -> speech.BatchRecognizeResponse:
+        """Perform batch transcription for long audio files"""
         try:
-            request = speech.LongRunningRecognizeRequest(config=config, audio=audio)
-            operation = self.client.long_running_recognize(request=request)
+            recognizer = self._get_or_create_recognizer()
             
-            logger.info(f"Long-running operation started for job {job_id}: {operation.name}")
+            # Create batch file metadata
+            file_metadata = speech.BatchRecognizeFileMetadata(
+                uri=audio_uri,
+                config=config
+            )
+            
+            request = speech.BatchRecognizeRequest(
+                recognizer=recognizer,
+                config=config,
+                files=[file_metadata]
+            )
+            
+            operation = self.client.batch_recognize(request=request)
+            
+            logger.info(f"Batch operation started for job {job_id}: {operation.name}")
             
             # Wait for completion with timeout
             response = operation.result(timeout=settings.storage.max_processing_time_seconds)
@@ -536,8 +613,8 @@ class GoogleSTTService:
             logger.error(f"Google API error for job {job_id}: {str(e)}")
             raise Exception(f"Google API error: {str(e)}")
         except Exception as e:
-            logger.error(f"Long-running operation failed for job {job_id}: {str(e)}")
-            raise Exception(f"Long-running operation failed: {str(e)}")
+            logger.error(f"Batch operation failed for job {job_id}: {str(e)}")
+            raise Exception(f"Batch operation failed: {str(e)}")
     
     def _upload_to_gcs(self, audio_file_path: str, job_id: str) -> str:
         """Upload audio file to Google Cloud Storage and return URI"""
@@ -592,14 +669,31 @@ class GoogleSTTService:
             logger.warning(f"Failed to cleanup GCS file {gcs_uri}: {str(e)}")
             # Don't raise exception for cleanup failures
     
-    def _process_transcription_results(self, response: speech.RecognizeResponse, job_id: str) -> TranscriptResult:
+    def _process_transcription_results(self, response, job_id: str) -> TranscriptResult:
         """Process transcription results into structured format"""
         try:
             entries = []
             total_confidence = 0
             confidence_count = 0
             
-            for result in response.results:
+            # Handle different response types for v2 API
+            if hasattr(response, 'results') and response.results:
+                # Synchronous response
+                results_list = response.results
+            elif hasattr(response, 'results') and hasattr(response.results, 'results'):
+                # Batch response - extract results from the first (and typically only) file
+                if response.results:
+                    first_result = list(response.results.values())[0]
+                    if hasattr(first_result, 'transcript') and first_result.transcript:
+                        results_list = first_result.transcript.results
+                    else:
+                        results_list = []
+                else:
+                    results_list = []
+            else:
+                results_list = []
+            
+            for result in results_list:
                 # Get the best alternative
                 alternative = result.alternatives[0]
                 
