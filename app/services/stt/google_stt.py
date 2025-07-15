@@ -595,15 +595,32 @@ class GoogleSTTService:
                 config=config
             )
             
+            # Create recognition output configuration for inline response
+            recognition_output_config = speech.RecognitionOutputConfig(
+                inline_response_config=speech.InlineOutputConfig()
+            )
+            
             request = speech.BatchRecognizeRequest(
                 recognizer=recognizer,
                 config=config,
-                files=[file_metadata]
+                files=[file_metadata],
+                recognition_output_config=recognition_output_config
             )
+            
+            logger.debug(f"Batch request created with recognition output config for job {job_id}")
             
             operation = self.client.batch_recognize(request=request)
             
-            logger.info(f"Batch operation started for job {job_id}: {operation.name}")
+            # Log operation details (safely handle different operation object types)
+            # In v2 API, the operation object has a 'operation' property that contains the actual operation
+            operation_name = 'unknown'
+            if hasattr(operation, 'operation') and hasattr(operation.operation, 'name'):
+                operation_name = operation.operation.name
+            elif hasattr(operation, 'name'):
+                operation_name = operation.name
+            
+            logger.info(f"Batch operation started for job {job_id}: {operation_name}")
+            logger.debug(f"Operation type: {type(operation)}")
             
             # Wait for completion with timeout
             response = operation.result(timeout=settings.storage.max_processing_time_seconds)
