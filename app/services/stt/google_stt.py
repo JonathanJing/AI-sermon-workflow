@@ -694,6 +694,11 @@ class GoogleSTTService:
                 results_list = []
             
             for result in results_list:
+                # Check if there are alternatives
+                if not result.alternatives:
+                    logger.warning(f"No alternatives found in result for job {job_id}")
+                    continue
+                    
                 # Get the best alternative
                 alternative = result.alternatives[0]
                 
@@ -821,7 +826,7 @@ class GoogleSTTService:
         for i, word in enumerate(words):
             # Start new phrase if needed
             if current_start is None:
-                current_start = word.start_time.total_seconds()
+                current_start = self._get_word_start_time(word)
             
             current_phrase.append(word.word)
             
@@ -835,7 +840,9 @@ class GoogleSTTService:
             # 2. Time-based boundary (significant pause after this word)
             elif i < len(words) - 1:
                 next_word = words[i + 1]
-                pause_duration = next_word.start_time.total_seconds() - word.end_time.total_seconds()
+                word_end_time = self._get_word_end_time(word)
+                next_word_start_time = self._get_word_start_time(next_word)
+                pause_duration = next_word_start_time - word_end_time
                 if pause_duration >= min_pause_duration:
                     should_end_phrase = True
             
@@ -851,7 +858,7 @@ class GoogleSTTService:
             if should_end_phrase and current_phrase:
                 entry = TranscriptEntry(
                     start_time=current_start,
-                    end_time=word.end_time.total_seconds(),
+                    end_time=self._get_word_end_time(word),
                     text=' '.join(current_phrase),
                     confidence=confidence
                 )
@@ -862,18 +869,78 @@ class GoogleSTTService:
                 current_start = None
         return entries
     
+    def _parse_time_offset(self, time_offset_str: str) -> float:
+        """
+        Parse time offset string from Google STT v2 API to float seconds.
+        
+        Args:
+            time_offset_str: Time offset string like "0s", "1.100s", "2.300s"
+            
+        Returns:
+            Time in seconds as float
+        """
+        if not time_offset_str:
+            return 0.0
+        
+        try:
+            # Remove 's' suffix and convert to float
+            if time_offset_str.endswith('s'):
+                return float(time_offset_str[:-1])
+            else:
+                return float(time_offset_str)
+        except (ValueError, AttributeError):
+            logger.warning(f"Failed to parse time offset: {time_offset_str}")
+            return 0.0
+    
+    def _get_word_start_time(self, word) -> float:
+        """
+        Get start time from word object, handling both v1 and v2 API formats.
+        
+        Args:
+            word: WordInfo object from Google STT API
+            
+        Returns:
+            Start time in seconds as float
+        """
+        # v2 API uses start_offset as string
+        if hasattr(word, 'start_offset') and word.start_offset:
+            return self._parse_time_offset(word.start_offset)
+        # v1 API uses start_time as duration object
+        elif hasattr(word, 'start_time') and word.start_time:
+            if hasattr(word.start_time, 'total_seconds'):
+                return word.start_time.total_seconds()
+            else:
+                return self._parse_time_offset(str(word.start_time))
+        else:
+            return 0.0
+    
+    def _get_word_end_time(self, word) -> float:
+        """
+        Get end time from word object, handling both v1 and v2 API formats.
+        
+        Args:
+            word: WordInfo object from Google STT API
+            
+        Returns:
+            End time in seconds as float
+        """
+        # v2 API uses end_offset as string
+        if hasattr(word, 'end_offset') and word.end_offset:
+            return self._parse_time_offset(word.end_offset)
+        # v1 API uses end_time as duration object
+        elif hasattr(word, 'end_time') and word.end_time:
+            if hasattr(word.end_time, 'total_seconds'):
+                return word.end_time.total_seconds()
+            else:
+                return self._parse_time_offset(str(word.end_time))
+        else:
+            return 0.0
+    
     def health_check(self) -> Dict[str, Any]:
         """Check service health"""
         try:
             if not self.client:
                 return {"status": "unhealthy", "error": "Client not initialized"}
-            
-            # Try a minimal operation to test connectivity
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=16000,
-                language_code=self.config.language_code
-            )
             
             return {
                 "status": "healthy",
