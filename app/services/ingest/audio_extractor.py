@@ -34,7 +34,7 @@ class AudioExtractor:
             Exception: If extraction fails
         """
         try:
-            logger.info(f"Starting audio extraction for job {job_id}: {file_path}")
+            logger.debug(f"Starting audio extraction for job {job_id}: {file_path}")
             
             input_path = Path(file_path)
             if not input_path.exists():
@@ -109,49 +109,49 @@ class AudioExtractor:
             Processed audio segment
         """
         try:
-            logger.info(f"Processing audio for STT optimization (target: {target_size_mb}MB) for job {job_id}")
+            logger.debug(f"Processing audio for STT optimization (target: {target_size_mb}MB) for job {job_id}")
             
             # Convert to mono if stereo
             if audio.channels > 1:
-                logger.info(f"Converting stereo to mono for job {job_id}")
+                logger.debug(f"Converting stereo to mono for job {job_id}")
                 audio = audio.set_channels(1)
             
             # Preserve original sample rate for STT (Google supports 8kHz-48kHz, but we enforce 16kHz minimum)
             # Only resample if outside supported range or if very low quality
             if audio.frame_rate < 16000:
                 target_sample_rate = 16000
-                logger.info(f"Upsampling from {audio.frame_rate}Hz to {target_sample_rate}Hz for better STT quality for job {job_id}")
+                logger.debug(f"Upsampling from {audio.frame_rate}Hz to {target_sample_rate}Hz for better STT quality for job {job_id}")
                 audio = audio.set_frame_rate(target_sample_rate)
             elif audio.frame_rate > 48000:
                 target_sample_rate = 48000
-                logger.info(f"Downsampling from {audio.frame_rate}Hz to {target_sample_rate}Hz (Google STT limit) for job {job_id}")
+                logger.debug(f"Downsampling from {audio.frame_rate}Hz to {target_sample_rate}Hz (Google STT limit) for job {job_id}")
                 audio = audio.set_frame_rate(target_sample_rate)
             else:
-                logger.info(f"Preserving original sample rate {audio.frame_rate}Hz for job {job_id}")
+                logger.debug(f"Preserving original sample rate {audio.frame_rate}Hz for job {job_id}")
             
             # Normalize audio levels first to maximize dynamic range
             audio = audio.normalize()
-            logger.info(f"Normalized audio levels for job {job_id}")
+            logger.debug(f"Normalized audio levels for job {job_id}")
             
             # Convert to 16-bit for Google STT WAV compatibility
             # Google STT requires 16-bit samples for LINEAR_PCM (WAV)
             if audio.sample_width != 2:
-                logger.info(f"Converting from {audio.sample_width * 8}-bit to 16-bit for Google STT for job {job_id}")
-                logger.info(f"Before conversion: sample_width={audio.sample_width}, max_possible_amplitude={audio.max_possible_amplitude}")
+                logger.debug(f"Converting from {audio.sample_width * 8}-bit to 16-bit for Google STT for job {job_id}")
+                logger.debug(f"Before conversion: sample_width={audio.sample_width}, max_possible_amplitude={audio.max_possible_amplitude}")
                 audio = audio.set_sample_width(2)  # 16-bit
-                logger.info(f"After conversion: sample_width={audio.sample_width}, max_possible_amplitude={audio.max_possible_amplitude}")
+                logger.debug(f"After conversion: sample_width={audio.sample_width}, max_possible_amplitude={audio.max_possible_amplitude}")
             else:
-                logger.info(f"Audio already 16-bit for Google STT for job {job_id}")
+                logger.debug(f"Audio already 16-bit for Google STT for job {job_id}")
             
             # Apply noise reduction if available (basic implementation)
             audio = self._apply_basic_noise_reduction(audio)
             
             # Check if we need further compression
             estimated_size_mb = self._estimate_wav_size(audio)
-            logger.info(f"Estimated WAV size: {estimated_size_mb:.2f}MB for job {job_id}")
+            logger.debug(f"Estimated WAV size: {estimated_size_mb:.2f}MB for job {job_id}")
             
             if estimated_size_mb > target_size_mb:
-                logger.info(f"Audio too large ({estimated_size_mb:.2f}MB), applying compression for job {job_id}")
+                logger.debug(f"Audio too large ({estimated_size_mb:.2f}MB), applying compression for job {job_id}")
                 audio = self._compress_audio(audio, job_id, target_size_mb)
             
             return audio

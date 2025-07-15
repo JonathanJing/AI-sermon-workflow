@@ -67,7 +67,7 @@ class SubtitleBuilder:
             with open(srt_path, 'a', encoding='utf-8') as f:
                 f.write('\n'.join(srt_content))
             
-            logger.info(f"Appended {len(subtitle_entries)} entries to SRT file: {srt_path}")
+            logger.debug(f"Appended {len(subtitle_entries)} entries to SRT file: {srt_path}")
             return srt_path
             
         except Exception as e:
@@ -97,7 +97,7 @@ class SubtitleBuilder:
             Exception: If subtitle creation fails
         """
         try:
-            logger.info(f"Starting subtitle creation for job {job_id}")
+            logger.debug(f"Starting subtitle creation for job {job_id}")
             
             # Process transcript entries into subtitle entries
             subtitle_entries = self._process_transcript_entries(transcript_result.entries, job_id)
@@ -129,7 +129,7 @@ class SubtitleBuilder:
                 "average_entry_duration": sum(entry.end_time - entry.start_time for entry in subtitle_entries) / len(subtitle_entries) if subtitle_entries else 0
             }
             
-            logger.info(f"Subtitle creation completed for job {job_id}: {len(subtitle_entries)} entries")
+            logger.debug(f"Subtitle creation completed for job {job_id}: {len(subtitle_entries)} entries")
             
             return str(srt_path), str(vtt_path), metadata
             

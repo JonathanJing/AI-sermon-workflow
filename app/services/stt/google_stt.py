@@ -48,12 +48,12 @@ class GoogleSTTService:
                 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_cloud.credentials_path
             
             self.client = speech.SpeechClient()
-            logger.info("Google Cloud Speech client initialized successfully")
+            logger.debug("Google Cloud Speech client initialized successfully")
             
             # Initialize storage client for GCS uploads
             if GCS_AVAILABLE and settings.google_cloud.bucket_name:
                 self.storage_client = storage.Client()
-                logger.info("Google Cloud Storage client initialized successfully")
+                logger.debug("Google Cloud Storage client initialized successfully")
             else:
                 if not GCS_AVAILABLE:
                     logger.warning("Google Cloud Storage not available - long audio files (>60s) will fail. Install with: pip install google-cloud-storage")
@@ -92,10 +92,10 @@ class GoogleSTTService:
             chunk_files = self._find_chunk_files(audio_path, job_id)
             
             if len(chunk_files) > 1:
-                logger.info(f"Processing {len(chunk_files)} audio chunks for job {job_id}")
+                logger.debug(f"Processing {len(chunk_files)} audio chunks for job {job_id}")
                 return self._transcribe_chunked_audio(chunk_files, job_id)
             else:
-                logger.info(f"Processing single audio file for job {job_id}")
+                logger.debug(f"Processing single audio file for job {job_id}")
                 return self._transcribe_single_file(audio_file_path, job_id)
             
         except Exception as e:
@@ -153,7 +153,7 @@ class GoogleSTTService:
             logger.info(f"Transcribing {len(chunk_files)} chunks for job {job_id}")
             
             for i, chunk_file in enumerate(chunk_files):
-                logger.info(f"Processing chunk {i+1}/{len(chunk_files)}: {chunk_file}")
+                logger.debug(f"Processing chunk {i+1}/{len(chunk_files)}: {chunk_file}")
                 
                 try:
                     # Validate chunk file before processing
@@ -206,7 +206,7 @@ class GoogleSTTService:
                     # Append to incremental SRT file
                     try:
                         srt_path = self.subtitle_builder.append_chunk_to_srt(adjusted_entries, job_id, srt_path)
-                        logger.info(f"Appended chunk {i+1} to SRT file: {srt_path}")
+                        logger.debug(f"Appended chunk {i+1} to SRT file: {srt_path}")
                     except Exception as e:
                         logger.warning(f"Failed to append chunk {i+1} to SRT file: {str(e)}")
                         # Continue processing even if SRT append fails
@@ -372,8 +372,8 @@ class GoogleSTTService:
                 audio_segment = AudioSegment.from_wav(audio_file_path)
                 detected_sample_rate = audio_segment.frame_rate
                 audio_duration_seconds = len(audio_segment) / 1000.0  # pydub duration is in milliseconds
-                logger.info(f"Detected sample rate: {detected_sample_rate}Hz for {job_id}")
-                logger.info(f"Audio duration: {audio_duration_seconds:.1f}s for {job_id}")
+                logger.debug(f"Detected sample rate: {detected_sample_rate}Hz for {job_id}")
+                logger.debug(f"Audio duration: {audio_duration_seconds:.1f}s for {job_id}")
             except Exception as e:
                 logger.warning(f"Could not detect audio properties for {job_id}, using defaults: {str(e)}")
                 detected_sample_rate = 16000
@@ -661,7 +661,7 @@ class GoogleSTTService:
             with open(transcript_path, 'w', encoding='utf-8') as f:
                 json.dump(transcript_dict, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"Transcript saved to {transcript_path}")
+            logger.debug(f"Transcript saved to {transcript_path}")
             return str(transcript_path)
             
         except Exception as e:

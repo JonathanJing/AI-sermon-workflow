@@ -37,7 +37,7 @@ class YouTubeDownloader:
             Exception: If download fails
         """
         try:
-            logger.info(f"Starting YouTube download for job {job_id}: {url}")
+            logger.debug(f"Starting YouTube download for job {job_id}: {url}")
             
             # Configure yt-dlp options
             output_filename = f"{job_id}_audio.%(ext)s"

@@ -19,7 +19,7 @@ class PhraseManager:
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                logger.info(f"Loaded {data.get('metadata', {}).get('total_phrases', 0)} phrases from {self.config_path}")
+                logger.debug(f"Loaded {data.get('metadata', {}).get('total_phrases', 0)} phrases from {self.config_path}")
                 return data
         except FileNotFoundError:
             logger.error(f"Phrases config file not found: {self.config_path}")
@@ -65,7 +65,7 @@ class PhraseManager:
             language_key = language_mapping.get(language_code, "chinese")
             phrases = self.phrases_data.get("religious_terms", {}).get(language_key, [])
             
-            logger.info(f"Retrieved {len(phrases)} phrases for language {language_code}")
+            logger.debug(f"Retrieved {len(phrases)} phrases for language {language_code}")
             return phrases
             
         except Exception as e:
@@ -78,7 +78,7 @@ class PhraseManager:
             categories = self.phrases_data.get("categories", {})
             phrases = categories.get(category, [])
             
-            logger.info(f"Retrieved {len(phrases)} phrases for category {category}")
+            logger.debug(f"Retrieved {len(phrases)} phrases for category {category}")
             return phrases
             
         except Exception as e:
@@ -212,7 +212,7 @@ class PhraseManager:
                     seen.add(phrase)
                     unique_results.append(phrase)
             
-            logger.info(f"Found {len(unique_results)} phrases matching '{query}'")
+            logger.debug(f"Found {len(unique_results)} phrases matching '{query}'")
             return unique_results
             
         except Exception as e:
