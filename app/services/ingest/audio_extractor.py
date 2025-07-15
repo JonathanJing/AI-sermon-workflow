@@ -1,10 +1,8 @@
-import os
 import logging
-from typing import Optional, Tuple, Dict, Any
+from typing import Tuple, Dict, Any
 from pathlib import Path
 from pydub import AudioSegment
 from pydub.utils import which
-import ffmpeg
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -74,9 +72,10 @@ class AudioExtractor:
             # Process audio for STT (convert to optimal format)
             processed_audio = self._process_for_stt(audio, job_id)
             
-            # Save processed audio
+            # Save processed audio as 16-bit WAV for Google STT compatibility
             output_filename = f"{job_id}_processed.wav"
             output_path = self.output_path / output_filename
+            logger.info(f"Saving as 16-bit WAV for Google STT for job {job_id}")
             
             processed_audio.export(str(output_path), format="wav")
             
@@ -117,19 +116,32 @@ class AudioExtractor:
                 logger.info(f"Converting stereo to mono for job {job_id}")
                 audio = audio.set_channels(1)
             
-            # Start with 16kHz for optimal STT performance
-            target_sample_rate = 16000
-            if audio.frame_rate != target_sample_rate:
-                logger.info(f"Resampling from {audio.frame_rate}Hz to {target_sample_rate}Hz for job {job_id}")
+            # Preserve original sample rate for STT (Google supports 8kHz-48kHz)
+            # Only resample if outside supported range or if very low quality
+            if audio.frame_rate < 16000:
+                target_sample_rate = 16000
+                logger.info(f"Upsampling from {audio.frame_rate}Hz to {target_sample_rate}Hz for better STT quality for job {job_id}")
                 audio = audio.set_frame_rate(target_sample_rate)
+            elif audio.frame_rate > 48000:
+                target_sample_rate = 48000
+                logger.info(f"Downsampling from {audio.frame_rate}Hz to {target_sample_rate}Hz (Google STT limit) for job {job_id}")
+                audio = audio.set_frame_rate(target_sample_rate)
+            else:
+                logger.info(f"Preserving original sample rate {audio.frame_rate}Hz for job {job_id}")
             
-            # Normalize audio levels
+            # Normalize audio levels first to maximize dynamic range
             audio = audio.normalize()
+            logger.info(f"Normalized audio levels for job {job_id}")
             
-            # Set sample width to 16-bit (2 bytes) for Google STT compatibility
+            # Convert to 16-bit for Google STT WAV compatibility
+            # Google STT requires 16-bit samples for LINEAR_PCM (WAV)
             if audio.sample_width != 2:
-                logger.info(f"Converting from {audio.sample_width * 8}-bit to 16-bit for job {job_id}")
-                audio = audio.set_sample_width(2)
+                logger.info(f"Converting from {audio.sample_width * 8}-bit to 16-bit for Google STT for job {job_id}")
+                logger.info(f"Before conversion: sample_width={audio.sample_width}, max_possible_amplitude={audio.max_possible_amplitude}")
+                audio = audio.set_sample_width(2)  # 16-bit
+                logger.info(f"After conversion: sample_width={audio.sample_width}, max_possible_amplitude={audio.max_possible_amplitude}")
+            else:
+                logger.info(f"Audio already 16-bit for Google STT for job {job_id}")
             
             # Apply noise reduction if available (basic implementation)
             audio = self._apply_basic_noise_reduction(audio)
@@ -200,38 +212,27 @@ class AudioExtractor:
     
     def _apply_basic_noise_reduction(self, audio: AudioSegment) -> AudioSegment:
         """
-        Apply basic noise reduction
+        Apply basic noise reduction while preserving original timing
         
         Args:
             audio: Input audio segment
             
         Returns:
-            Processed audio with reduced noise
+            Processed audio with reduced noise but original duration
         """
         try:
-            # Basic noise gate - remove quiet background noise
-            # This is a simple implementation; more sophisticated noise reduction
-            # would require additional libraries like noisereduce
+            # For now, disable aggressive noise reduction that removes silent parts
+            # This was causing the audio to be shortened significantly
+            # TODO: Implement proper noise reduction that attenuates but doesn't remove silence
             
-            # Calculate silence threshold (10% of max amplitude)
-            silence_threshold = audio.max_possible_amplitude * 0.1
+            logger.info("Skipping aggressive noise reduction to preserve audio duration")
+            return audio
             
-            # Apply simple noise gate
-            chunks = audio[::100]  # Sample every 100ms
-            non_silent_chunks = []
-            
-            for i, chunk in enumerate(chunks):
-                if chunk.rms > silence_threshold:
-                    start_idx = i * 100
-                    end_idx = min((i + 1) * 100, len(audio))
-                    non_silent_chunks.append(audio[start_idx:end_idx])
-            
-            if non_silent_chunks:
-                # Rejoin non-silent chunks
-                return sum(non_silent_chunks)
-            else:
-                # If all chunks are silent, return original
-                return audio
+            # Future implementation could use proper noise reduction like:
+            # - Spectral subtraction
+            # - Wiener filtering
+            # - Libraries like noisereduce
+            # But should preserve the original timing structure
                 
         except Exception as e:
             logger.warning(f"Basic noise reduction failed, using original audio: {str(e)}")

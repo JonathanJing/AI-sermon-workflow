@@ -326,49 +326,13 @@ class GoogleSTTService:
                 
                 # Extract words with timing
                 if hasattr(alternative, 'words') and alternative.words:
-                    # Group words into sentences or phrases
-                    current_sentence = []
-                    current_start = None
+                    # Segment words into meaningful phrases using multiple strategies
+                    entries.extend(self._segment_words_into_phrases(alternative.words, alternative.confidence))
                     
-                    for word in alternative.words:
-                        if current_start is None:
-                            current_start = word.start_time.total_seconds()
-                        
-                        current_sentence.append(word.word)
-                        
-                        # Check if this is end of sentence (basic punctuation detection)
-                        if word.word.endswith(('.', '!', '?', '。', '！', '？')):
-                            if current_sentence:
-                                entry = TranscriptEntry(
-                                    start_time=current_start,
-                                    end_time=word.end_time.total_seconds(),
-                                    text=' '.join(current_sentence),
-                                    confidence=alternative.confidence if hasattr(alternative, 'confidence') else None
-                                )
-                                entries.append(entry)
-                                
-                                # Update confidence tracking
-                                if alternative.confidence:
-                                    total_confidence += alternative.confidence
-                                    confidence_count += 1
-                            
-                            current_sentence = []
-                            current_start = None
-                    
-                    # Handle remaining words
-                    if current_sentence:
-                        last_word = alternative.words[-1]
-                        entry = TranscriptEntry(
-                            start_time=current_start,
-                            end_time=last_word.end_time.total_seconds(),
-                            text=' '.join(current_sentence),
-                            confidence=alternative.confidence if hasattr(alternative, 'confidence') else None
-                        )
-                        entries.append(entry)
-                        
-                        if alternative.confidence:
-                            total_confidence += alternative.confidence
-                            confidence_count += 1
+                    # Update confidence tracking
+                    if alternative.confidence:
+                        total_confidence += alternative.confidence
+                        confidence_count += 1
                 else:
                     # Fallback: create single entry without timing
                     entry = TranscriptEntry(
@@ -466,6 +430,64 @@ class GoogleSTTService:
             
         except Exception:
             return True  # If we can't estimate, allow the request
+    
+    def _segment_words_into_phrases(self, words, confidence):
+        """
+        Segment words into meaningful phrases using multiple strategies:
+        1. Time-based segmentation (natural pauses)
+        2. Length-based segmentation (every N words)
+        3. Punctuation-based segmentation
+        """
+        entries = []
+        current_phrase = []
+        current_start = None
+        
+        max_phrase_length = 15  # Maximum words per phrase
+        min_pause_duration = 0.8  # Minimum pause to consider phrase boundary (seconds)
+        
+        for i, word in enumerate(words):
+            # Start new phrase if needed
+            if current_start is None:
+                current_start = word.start_time.total_seconds()
+            
+            current_phrase.append(word.word)
+            
+            # Check for phrase boundary conditions
+            should_end_phrase = False
+            
+            # 1. Punctuation-based boundary
+            if word.word.endswith(('.', '!', '?', '。', '！', '？', '，', ',')):
+                should_end_phrase = True
+            
+            # 2. Time-based boundary (significant pause after this word)
+            elif i < len(words) - 1:
+                next_word = words[i + 1]
+                pause_duration = next_word.start_time.total_seconds() - word.end_time.total_seconds()
+                if pause_duration >= min_pause_duration:
+                    should_end_phrase = True
+            
+            # 3. Length-based boundary (max words reached)
+            if len(current_phrase) >= max_phrase_length:
+                should_end_phrase = True
+            
+            # 4. End of words
+            if i == len(words) - 1:
+                should_end_phrase = True
+            
+            # Create phrase entry if boundary detected
+            if should_end_phrase and current_phrase:
+                entry = TranscriptEntry(
+                    start_time=current_start,
+                    end_time=word.end_time.total_seconds(),
+                    text=' '.join(current_phrase),
+                    confidence=confidence
+                )
+                entries.append(entry)
+                
+                # Reset for next phrase
+                current_phrase = []
+                current_start = None
+        return entries
     
     def health_check(self) -> Dict[str, Any]:
         """Check service health"""
