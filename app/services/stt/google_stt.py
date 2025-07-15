@@ -1,13 +1,13 @@
 import os
 import logging
 import json
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 from pathlib import Path
 from google.cloud import speech_v1p1beta1 as speech
-from google.cloud.speech_v1p1beta1 import types
 from google.api_core import exceptions as gcp_exceptions
 from app.config import settings
 from app.models import TranscriptEntry, TranscriptResult
+from app.services.phrase_manager import PhraseManager
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,9 @@ class GoogleSTTService:
         self.config = settings.stt
         self.output_path = Path(settings.storage.local_path) / "processed"
         self.output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize phrase manager
+        self.phrase_manager = PhraseManager()
         
         # Initialize client if credentials are available
         self._initialize_client()
@@ -273,7 +276,7 @@ class GoogleSTTService:
             profanity_filter=False,
             speech_contexts=[
                 speech.SpeechContext(
-                    phrases=["阿门", "哈利路亚", "主耶稣", "神", "圣经", "福音", "祷告", "赞美"]  # Common religious terms
+                    phrases=self.phrase_manager.get_phrases_for_language(self.config.language_code)
                 )
             ]
         )
@@ -372,7 +375,7 @@ class GoogleSTTService:
             
             # Convert to dict for JSON serialization
             transcript_dict = {
-                "entries": [entry.dict() for entry in transcript_result.entries],
+                "entries": [entry.model_dump() for entry in transcript_result.entries],
                 "total_duration": transcript_result.total_duration,
                 "language": transcript_result.language,
                 "confidence": transcript_result.confidence,

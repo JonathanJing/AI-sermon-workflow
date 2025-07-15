@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from datetime import datetime
 from pathlib import Path
 from app.config import settings
-from app.routers import jobs
+from app.routers import jobs, phrases
 from app.models import HealthResponse, ErrorResponse
 from app.workers import health_check, get_job_stats
 from app.services.storage import storage_manager
@@ -65,6 +65,7 @@ if settings.storage.type == "local":
 
 # Include routers
 app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(phrases.router, prefix="/api/v1")
 
 
 @app.get("/", response_model=dict)
@@ -81,6 +82,7 @@ async def root():
             "upload": "/api/v1/jobs/transcribe/upload",
             "job_status": "/api/v1/jobs/{job_id}",
             "list_jobs": "/api/v1/jobs/",
+            "phrases": "/api/v1/phrases/",
             "health": "/health",
             "stats": "/stats"
         }
