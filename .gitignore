@@ -10,3 +10,4 @@ service-account.json
 data/.DS_Store
 data/processed/.DS_Store
 .DS_Store
+/data/processed

@@ -5,14 +5,13 @@ from typing import List, Dict, Any, Tuple
 from pathlib import Path
 from google.cloud import speech_v1p1beta1 as speech
 from google.api_core import exceptions as gcp_exceptions
-from google.cloud import storage
 # Optional GCS import - only needed for long audio files
-# try:
-#     from google.cloud import storage
-#     GCS_AVAILABLE = True
-# except ImportError:
-#     storage = None
-#     GCS_AVAILABLE = False
+try:
+    from google.cloud import storage
+    GCS_AVAILABLE = True
+except ImportError:
+    storage = None
+    GCS_AVAILABLE = False
 from app.config import settings
 from app.models import TranscriptEntry, TranscriptResult
 from app.services.phrase_manager import PhraseManager
@@ -253,8 +252,9 @@ class GoogleSTTService:
                 "processing_methods": list(set(processing_methods))
             }
             
+            confidence_str = f"{overall_confidence:.3f}" if overall_confidence else "N/A"
             logger.info(f"Chunked transcription completed for job {job_id}: {len(all_entries)} entries, "
-                       f"confidence: {overall_confidence:.3f if overall_confidence else 'N/A'}")
+                       f"confidence: {confidence_str}")
             
             return transcript_result, processing_metadata
             

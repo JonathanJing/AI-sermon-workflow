@@ -209,7 +209,8 @@ def test_stt_conversion(chunk_path: str, job_id: str = "test_stt") -> Dict[str, 
         logger.info(f"STT conversion successful:")
         logger.info(f"  - Entries: {len(result['transcript_entries'])}")
         logger.info(f"  - Duration: {result['total_duration']:.1f}s")
-        logger.info(f"  - Confidence: {result['confidence']:.3f if result['confidence'] else 'N/A'}")
+        confidence_str = f"{result['confidence']:.3f}" if result['confidence'] else "N/A"
+        logger.info(f"  - Confidence: {confidence_str}")
         logger.info(f"  - Method: {processing_metadata.get('transcription_method', 'unknown')}")
         
         # Log transcript entries

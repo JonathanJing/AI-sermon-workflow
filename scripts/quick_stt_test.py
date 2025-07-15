@@ -78,7 +78,8 @@ def quick_stt_test():
         logger.info(f"✅ STT conversion successful:")
         logger.info(f"  - Entries: {len(transcript_result.entries)}")
         logger.info(f"  - Duration: {transcript_result.total_duration:.1f}s")
-        logger.info(f"  - Confidence: {transcript_result.confidence:.3f if transcript_result.confidence else 'N/A'}")
+        confidence_str = f"{transcript_result.confidence:.3f}" if transcript_result.confidence else "N/A"
+        logger.info(f"  - Confidence: {confidence_str}")
         logger.info(f"  - Language: {transcript_result.language}")
         logger.info(f"  - Method: {metadata.get('transcription_method', 'unknown')}")
         logger.info(f"  - Cost: ${metadata.get('estimated_cost_usd', 0):.4f}")
