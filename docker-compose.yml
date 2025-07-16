@@ -8,13 +8,18 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./app/config:/app/app/config:ro  # Mount config directory for phrase management
     env_file:
       - .env
     environment:
       - LOG_LEVEL=INFO
       - DEBUG=false
-    depends_on:
-      - redis
+      - STORAGE_TYPE=local
+      - STT_LANGUAGE_CODE=cmn-Hans-CN
+      - STT_MODEL=default
+      - STT_COST_LIMIT_USD=10.0
+      - MAX_FILE_SIZE_MB=500
+      - MAX_PROCESSING_TIME_SECONDS=3600
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -22,7 +27,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    profiles:
+      - default
+      - redis
 
+  # Redis service for task queue (optional)
   redis:
     image: redis:7-alpine
     ports:
@@ -35,6 +44,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    profiles:
+      - redis
 
   # Optional: Add a simple web interface for monitoring
   adminer:

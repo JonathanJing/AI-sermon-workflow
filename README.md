@@ -1,17 +1,21 @@
 # Sermon Workflow - Phase 1: Speech-to-Text Service
 
-Automated sermon content workflow system that converts video/audio sermons into high-quality Simplified Chinese subtitles using Google Cloud Speech-to-Text.
+Automated sermon content workflow system that converts video/audio sermons into high-quality Simplified Chinese subtitles using Google Cloud Speech-to-Text v2 API.
 
 ## 🎯 Features
 
 - **Multi-source ingestion**: YouTube URLs and local audio/video files
-- **Google Cloud STT**: High-accuracy Simplified Chinese transcription
+- **Google Cloud STT v2 API**: High-accuracy Simplified Chinese transcription with batch processing
+- **Intelligent audio chunking**: Automatic splitting of large files for optimal STT performance
+- **Phrase management system**: Domain-specific religious terms for improved accuracy
 - **Subtitle generation**: SRT and WebVTT formats with proper line wrapping
-- **REST API**: RESTful endpoints for job management
-- **Batch processing**: CLI tool for processing multiple files
-- **Storage options**: Local filesystem or Google Cloud Storage
-- **Docker support**: Containerized deployment
-- **Cost monitoring**: STT cost estimation and limits
+- **REST API**: Comprehensive RESTful endpoints for job and phrase management
+- **Batch processing**: CLI tool for processing multiple files with concurrent job support
+- **Storage options**: Local filesystem or Google Cloud Storage with automatic cleanup
+- **Docker support**: Containerized deployment with health checks
+- **Cost monitoring**: Real-time STT cost estimation and limits
+- **Comprehensive testing**: Validation tools and diagnostic scripts
+- **Production-ready**: Structured logging, monitoring, and error handling
 
 ## 🏗️ Architecture
 
@@ -38,13 +42,19 @@ Automated sermon content workflow system that converts video/audio sermons into 
     ┌─────────▼──────────┐ ┌─────▼──────┐ ┌─────────▼──────────┐
     │   YouTube          │ │   Audio    │ │   Google Cloud      │
     │   Downloader       │ │   Processor│ │   Speech-to-Text   │
+    │   (yt-dlp)         │ │   (pydub)  │ │   v2 API           │
     └─────────┬──────────┘ └─────┬──────┘ └─────────┬──────────┘
               │                  │                  │
               └──────────────────┼──────────────────┘
                                  │
                     ┌─────────────▼───────────────┐
+                    │   Phrase Manager            │
+                    │   (Domain-specific terms)   │
+                    └─────────────┬───────────────┘
+                                  │
+                    ┌─────────────▼───────────────┐
                     │   Subtitle Builder          │
-                    │                             │
+                    │   (SRT/WebVTT)             │
                     └─────────────┬───────────────┘
                                   │
                     ┌─────────────▼───────────────┐
@@ -61,6 +71,7 @@ Automated sermon content workflow system that converts video/audio sermons into 
 - FFmpeg
 - Google Cloud credentials (for STT)
 - Docker (optional)
+- Redis (optional, for task queue)
 
 ### Installation
 
@@ -150,7 +161,40 @@ curl "http://localhost:8000/api/v1/jobs/{job_id}"
 curl "http://localhost:8000/api/v1/jobs/?limit=10&offset=0"
 ```
 
-### 4. Health Check
+### 4. Phrase Management
+
+**Get all phrases:**
+```bash
+curl "http://localhost:8000/api/v1/phrases/"
+```
+
+**Get phrases by language:**
+```bash
+curl "http://localhost:8000/api/v1/phrases/language/cmn-Hans-CN"
+```
+
+**Add new phrase:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/phrases/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phrase": "恩典尔湾",
+    "language": "chinese",
+    "category": "church_names"
+  }'
+```
+
+**Search phrases:**
+```bash
+curl -X POST "http://localhost:8000/api/v1/phrases/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "耶稣",
+    "language": "chinese"
+  }'
+```
+
+### 5. Health Check
 
 ```bash
 curl "http://localhost:8000/health"
@@ -181,6 +225,59 @@ Use the CLI tool for processing multiple files:
      --timeout 7200
    ```
 
+## 🧪 Testing & Validation
+
+### Quick Tests
+
+**Test YouTube extraction:**
+```bash
+python scripts/quick_youtube_test.py
+```
+
+**Test STT conversion:**
+```bash
+python scripts/quick_stt_test.py
+```
+
+**Test chunking system:**
+```bash
+python scripts/quick_chunking_test.py
+```
+
+### Comprehensive Validation
+
+**Validate chunking system:**
+```bash
+python scripts/validate_chunking_system.py audio_file.mp3
+```
+
+**Test GCS STT support:**
+```bash
+python scripts/test_gcs_stt.py
+```
+
+**Diagnose Google STT issues:**
+```bash
+python scripts/diagnose_google_stt.py
+```
+
+### Test Suites
+
+**Run chunked extraction test:**
+```bash
+python tests/test_chunked_extraction.py
+```
+
+**Run comprehensive YouTube test:**
+```bash
+python tests/test_youtube_extraction.py
+```
+
+**Run single chunk STT test:**
+```bash
+python tests/test_single_chunk_stt.py
+```
+
 ## ⚙️ Configuration
 
 Key configuration options in `.env`:
@@ -193,17 +290,25 @@ GCS_BUCKET_NAME=your-bucket-name
 
 # Speech-to-Text
 STT_LANGUAGE_CODE=cmn-Hans-CN
-STT_MODEL=video
+STT_MODEL=default
 STT_COST_LIMIT_USD=10.0
 
 # Storage
 STORAGE_TYPE=local  # or 'gcs'
 LOCAL_STORAGE_PATH=./data/processed
+MAX_FILE_SIZE_MB=500
 
 # API
 API_HOST=0.0.0.0
 API_PORT=8000
 API_KEY=your-api-key
+
+# Redis (optional)
+REDIS_URL=redis://localhost:6379/0
+
+# Development
+DEBUG=true
+LOG_LEVEL=INFO
 ```
 
 ## 📁 Project Structure
@@ -217,22 +322,34 @@ sermon-workflow/
 │   ├── models.py               # Data models
 │   ├── workers.py              # Background job processing
 │   ├── routers/
-│   │   └── jobs.py             # API routes
-│   └── services/
-│       ├── ingest/
-│       │   ├── downloader.py   # YouTube downloader
-│       │   └── audio_extractor.py  # Audio processing
-│       ├── stt/
-│       │   └── google_stt.py   # Google Cloud STT
-│       ├── subtitles/
-│       │   └── builder.py      # Subtitle generation
-│       └── storage.py          # Storage management
+│   │   ├── jobs.py             # Job management routes
+│   │   └── phrases.py          # Phrase management routes
+│   ├── services/
+│   │   ├── ingest/
+│   │   │   ├── downloader.py   # YouTube downloader
+│   │   │   └── audio_extractor.py  # Audio processing & chunking
+│   │   ├── stt/
+│   │   │   └── google_stt.py   # Google Cloud STT v2 API
+│   │   ├── subtitles/
+│   │   │   └── builder.py      # Subtitle generation
+│   │   ├── phrase_manager.py   # Phrase management service
+│   │   └── storage.py          # Storage management
+│   └── config/
+│       └── phrases.json        # Domain-specific phrases
 ├── scripts/
-│   └── batch_transcribe.py     # Batch processing CLI
+│   ├── batch_transcribe.py     # Batch processing CLI
+│   ├── validate_chunking_system.py  # Chunking validation
+│   ├── test_gcs_stt.py         # GCS STT testing
+│   ├── diagnose_google_stt.py  # STT diagnostics
+│   └── quick_*.py              # Quick test scripts
+├── tests/
+│   ├── test_chunked_extraction.py  # Comprehensive chunking test
+│   ├── test_youtube_extraction.py  # YouTube workflow test
+│   ├── test_single_chunk_stt.py    # STT conversion test
+│   └── test_*.py                   # Other test files
 ├── data/
 │   ├── raw/                    # Raw audio files
 │   └── processed/              # Processed outputs
-├── tests/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -262,44 +379,69 @@ curl -X POST "http://localhost:8000/api/v1/jobs/transcribe" \
 curl "http://localhost:8000/api/v1/jobs/{job_id}"
 ```
 
+**Test phrase management:**
+```bash
+curl "http://localhost:8000/api/v1/phrases/health"
+```
+
 ## 📊 Monitoring
 
 - **Health endpoint**: `GET /health`
 - **Statistics**: `GET /stats`
 - **Configuration**: `GET /config` (debug mode only)
-- **Logs**: Structured JSON logging with configurable levels
+- **Structured logging**: JSON format with configurable levels
+- **Performance metrics**: Processing time, cost estimation, file sizes
 
 ## 🐳 Docker Deployment
 
-**Development:**
+### Development
 ```bash
+# Basic development setup
 docker-compose up --build
-```
 
-**Production:**
-```bash
-docker-compose -f docker-compose.yml up -d
-```
+# With Redis for task queue
+docker-compose --profile redis up -d
 
-**With admin interface:**
-```bash
+# With admin interface
 docker-compose --profile admin up -d
+```
+
+### Production
+```bash
+# Production with Redis
+docker-compose -f docker-compose.prod.yml --profile production up -d
+
+# Production with monitoring stack
+docker-compose -f docker-compose.prod.yml --profile production --profile monitoring up -d
+```
+
+### Environment Setup
+```bash
+# Copy and configure environment file
+cp .env.template .env
+# Edit .env with your production settings
+
+# For production, ensure service account is available
+# The service-account.json file will be mounted into the container
 ```
 
 ## 🔐 Security
 
 - API key authentication (optional)
-- File upload validation
+- File upload validation and size limits
 - Resource limits (file size, processing time)
 - Cost limits for STT usage
 - Non-root container execution
+- CORS configuration for web clients
 
 ## 📈 Performance & Scaling
 
 - **Concurrent processing**: Background tasks with configurable limits
+- **Intelligent chunking**: Automatic audio splitting for optimal STT performance
 - **File streaming**: Efficient handling of large audio files
 - **Storage optimization**: Automatic cleanup and lifecycle management
 - **Cost monitoring**: Real-time STT cost estimation and limits
+- **Batch operations**: Support for long audio files via Google Cloud Storage
 
 ## 🚧 Known Limitations
 
@@ -316,6 +458,8 @@ docker-compose --profile admin up -d
 - **Database**: PostgreSQL integration
 - **Queue**: Redis/RQ for robust job processing
 - **Monitoring**: Prometheus + Grafana dashboard
+- **Multi-language**: Support for additional languages
+- **Advanced phrase adaptation**: Dynamic phrase learning
 
 ## 🤝 Contributing
 
@@ -335,6 +479,7 @@ For issues and questions:
 - Check the logs: `docker-compose logs`
 - Health check: `curl http://localhost:8000/health`
 - Documentation: `http://localhost:8000/docs`
+- Run diagnostics: `python scripts/diagnose_google_stt.py`
 
 ## 📋 Environment Variables Reference
 
@@ -344,12 +489,32 @@ For issues and questions:
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID | Required |
 | `GCS_BUCKET_NAME` | GCS bucket for file storage | Optional |
 | `STT_LANGUAGE_CODE` | Speech-to-Text language | `cmn-Hans-CN` |
-| `STT_MODEL` | STT model type | `video` |
+| `STT_MODEL` | STT model type | `default` |
 | `STT_COST_LIMIT_USD` | Maximum STT cost per job | `10.0` |
 | `STORAGE_TYPE` | Storage backend (`local` or `gcs`) | `local` |
 | `LOCAL_STORAGE_PATH` | Local storage directory | `./data/processed` |
+| `MAX_FILE_SIZE_MB` | Maximum file size for processing | `500` |
 | `API_HOST` | API server host | `0.0.0.0` |
 | `API_PORT` | API server port | `8000` |
 | `API_KEY` | API authentication key | Optional |
+| `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
 | `DEBUG` | Enable debug mode | `true` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+
+## 🎯 Key Features Summary
+
+### Latest Enhancements
+- **Google Cloud Speech-to-Text v2 API**: Full support for the latest API with improved accuracy
+- **Intelligent Audio Chunking**: Automatic splitting of large files to stay within Google STT limits
+- **Phrase Management System**: Domain-specific religious terms for improved transcription accuracy
+- **Comprehensive Testing Suite**: Validation tools and diagnostic scripts for troubleshooting
+- **Batch Processing**: CLI tool with concurrent job support for processing multiple files
+- **Production-Ready**: Structured logging, health checks, and monitoring endpoints
+
+### Technical Improvements
+- **Audio Processing**: Optimized for STT with automatic format conversion and quality preservation
+- **Error Handling**: Robust error handling with detailed logging and recovery mechanisms
+- **Performance**: Efficient processing pipeline with configurable concurrency limits
+- **Scalability**: Support for both local and cloud storage with automatic cleanup
+- **Monitoring**: Real-time cost tracking and performance metrics
+- **Docker Optimization**: Multi-stage builds, proper file mounting, and production-ready configurations

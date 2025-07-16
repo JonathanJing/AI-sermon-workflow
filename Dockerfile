@@ -19,9 +19,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install optional GCS dependencies for long audio processing
+COPY requirements-gcs.txt .
+RUN pip install --no-cache-dir -r requirements-gcs.txt
+
 # Copy application code
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+COPY tests/ ./tests/
 
 # Create data directories
 RUN mkdir -p data/raw data/processed
