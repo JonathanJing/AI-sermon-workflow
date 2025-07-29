@@ -1,0 +1,113 @@
+"""
+AI视频自动切片系统主应用
+"""
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+import os
+import sys
+from pathlib import Path
+
+# 添加项目根目录到Python路径
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from app.routers import video_clipping
+
+# 创建FastAPI应用实例
+app = FastAPI(
+    title="AI视频自动切片系统",
+    description="基于SRT字幕文件和生成式AI的视频自动切片系统",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# 添加CORS中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 在生产环境中应该设置具体的域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 包含路由
+app.include_router(video_clipping.router)
+
+# 静态文件服务（用于提供生成的视频文件）
+if os.path.exists("data/clips"):
+    app.mount("/clips", StaticFiles(directory="data/clips"), name="clips")
+
+@app.get("/", summary="系统信息")
+async def root():
+    """获取系统基本信息"""
+    return {
+        "name": "AI视频自动切片系统",
+        "version": "1.0.0",
+        "description": "基于SRT字幕文件和生成式AI的视频自动切片系统",
+        "features": [
+            "SRT字幕文件解析",
+            "AI智能语义切片",
+            "视频自动切割",
+            "质量评分验证",
+            "标题标签生成",
+            "社交媒体优化"
+        ],
+        "endpoints": {
+            "docs": "/docs",
+            "redoc": "/redoc",
+            "video_clipping": "/video-clipping"
+        }
+    }
+
+@app.get("/health", summary="健康检查")
+async def health_check():
+    """系统健康检查"""
+    return {
+        "status": "healthy",
+        "timestamp": str(datetime.now()) if 'datetime' in globals() else "unknown"
+    }
+
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    """404错误处理"""
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "资源未找到",
+            "message": "请检查请求路径是否正确",
+            "docs_url": "/docs"
+        }
+    )
+
+@app.exception_handler(500)
+async def internal_error_handler(request, exc):
+    """500错误处理"""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "服务器内部错误",
+            "message": "请联系系统管理员或查看日志",
+            "support": "https://github.com/your-repo/issues"
+        }
+    )
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    # 确保必要的目录存在
+    os.makedirs("data/clips", exist_ok=True)
+    os.makedirs("data/uploads", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
+    
+    # 启动服务
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )

@@ -1,0 +1,12 @@
+/.venv
+/app/__pycache__
+/app/routers/__pycache__
+*.webm
+*.wav
+*.vtt
+*.srt
+/data/processed
+*.pyc
+*.DS_Store
+*.MP3
+service-account.json
