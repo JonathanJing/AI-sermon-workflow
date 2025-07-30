@@ -15,6 +15,41 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# 首先确保API key环境变量设置正确
+def setup_api_key():
+    """设置API key环境变量"""
+    import json
+    
+    # 如果环境变量已设置，优先使用
+    if os.getenv('GOOGLE_API_KEY'):
+        print("✅ 使用环境变量中的GOOGLE_API_KEY")
+        return True
+    
+    # 尝试从文件读取API key
+    api_key_files = ['gemini-api-key.json', 'api-key.json', 'google-api-key.json']
+    
+    for key_file in api_key_files:
+        key_path = os.path.join(project_root, key_file)
+        if os.path.exists(key_path):
+            try:
+                with open(key_path, 'r') as f:
+                    key_data = json.load(f)
+                
+                if 'api_key' in key_data and key_data['api_key']:
+                    os.environ['GOOGLE_API_KEY'] = key_data['api_key']
+                    print(f"✅ 从{key_file}读取API key并设置环境变量")
+                    return True
+                    
+            except Exception as e:
+                print(f"❌ 读取{key_file}失败: {str(e)}")
+                continue
+    
+    print("❌ 未找到有效的API key")
+    return False
+
+# 设置API key
+setup_api_key()
+
 from app.routers import video_clipping
 from app.services.gemini_client import initialize_global_client
 from app.config import settings
@@ -28,7 +63,18 @@ try:
     print(f"✅ Gemini客户端初始化成功: {settings.GEMINI_MODEL}")
 except Exception as e:
     print(f"❌ Gemini客户端初始化失败: {str(e)}")
-    print("请检查API密钥配置")
+    print("🔧 尝试修复...")
+    
+    # 尝试使用备选模型
+    try:
+        initialize_global_client(
+            service_account_path=settings.GOOGLE_SERVICE_ACCOUNT_PATH,
+            model_name="gemini-1.5-pro"
+        )
+        print("✅ 使用备选模型 gemini-1.5-pro 初始化成功")
+    except Exception as e2:
+        print(f"❌ 备选模型也失败: {str(e2)}")
+        print("请检查API密钥配置和网络连接")
 
 # 创建FastAPI应用实例
 app = FastAPI(

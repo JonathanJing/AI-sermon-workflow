@@ -37,9 +37,19 @@ class GeminiClient:
             
             # 优先使用环境变量中的API Key
             if 'GOOGLE_API_KEY' in os.environ and os.environ['GOOGLE_API_KEY']:
-                logger.info("使用GOOGLE_API_KEY进行身份验证")
-                genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
-                return
+                api_key = os.environ['GOOGLE_API_KEY']
+                logger.info(f"使用GOOGLE_API_KEY进行身份验证: {api_key[:10]}...")
+                genai.configure(api_key=api_key)
+                
+                # 验证API key是否有效
+                try:
+                    # 创建一个测试模型来验证认证
+                    test_model = genai.GenerativeModel('gemini-1.5-pro')
+                    logger.info("✅ API Key验证成功")
+                    return
+                except Exception as verify_error:
+                    logger.error(f"API Key验证失败: {str(verify_error)}")
+                    # 继续尝试其他认证方式
             
             # 尝试从多个可能的API密钥文件中读取
             api_key_files = [
