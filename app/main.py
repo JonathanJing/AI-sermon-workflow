@@ -9,18 +9,32 @@ from fastapi.responses import JSONResponse
 import os
 import sys
 from pathlib import Path
+from datetime import datetime
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from app.routers import video_clipping
+from app.services.gemini_client import initialize_global_client
+from app.config import settings
+
+# 初始化Gemini客户端
+try:
+    initialize_global_client(
+        service_account_path=settings.GOOGLE_SERVICE_ACCOUNT_PATH,
+        model_name=settings.GEMINI_MODEL
+    )
+    print(f"✅ Gemini客户端初始化成功: {settings.GEMINI_MODEL}")
+except Exception as e:
+    print(f"❌ Gemini客户端初始化失败: {str(e)}")
+    print("请检查API密钥配置")
 
 # 创建FastAPI应用实例
 app = FastAPI(
     title="AI视频自动切片系统",
-    description="基于SRT字幕文件和生成式AI的视频自动切片系统",
-    version="1.0.0",
+    description="基于SRT字幕文件和Gemini 2.5-pro的视频自动切片系统",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -68,7 +82,7 @@ async def health_check():
     """系统健康检查"""
     return {
         "status": "healthy",
-        "timestamp": str(datetime.now()) if 'datetime' in globals() else "unknown"
+        "timestamp": str(datetime.now())
     }
 
 @app.exception_handler(404)

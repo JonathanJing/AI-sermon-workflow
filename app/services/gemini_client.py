@@ -26,38 +26,82 @@ class GeminiClient:
         """
         self.model_name = model_name
         self.model = None
+        logger.info(f"初始化Gemini客户端，Service Account路径: {service_account_path}")
         self._setup_authentication(service_account_path)
         self._initialize_model()
     
     def _setup_authentication(self, service_account_path: str = None):
         """设置Google Cloud身份验证"""
         try:
-            if service_account_path and os.path.exists(service_account_path):
-                # 使用Service Account文件
-                logger.info(f"使用Service Account文件: {service_account_path}")
-                
-                # 读取Service Account JSON
-                with open(service_account_path, 'r') as f:
-                    service_account_info = json.load(f)
-                
-                # 创建凭据
-                credentials = service_account.Credentials.from_service_account_info(
-                    service_account_info,
-                    scopes=['https://www.googleapis.com/auth/generative-language']
-                )
-                
-                # 配置Gemini
-                genai.configure(credentials=credentials)
-                
-            elif 'GOOGLE_API_KEY' in os.environ:
-                # 使用API Key
+            logger.info(f"开始设置身份验证，Service Account路径: {service_account_path}")
+            
+            # 优先使用环境变量中的API Key
+            if 'GOOGLE_API_KEY' in os.environ and os.environ['GOOGLE_API_KEY']:
                 logger.info("使用GOOGLE_API_KEY进行身份验证")
                 genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
-                
-            else:
-                # 尝试使用默认凭据
-                logger.info("尝试使用默认Google凭据")
+                return
+            
+            # 尝试从多个可能的API密钥文件中读取
+            api_key_files = [
+                service_account_path,
+                'gemini-api-key.json',
+                'api-key.json',
+                'google-api-key.json'
+            ]
+            
+            for key_file in api_key_files:
+                if key_file and os.path.exists(key_file):
+                    logger.info(f"尝试从文件读取API Key: {key_file}")
+                    
+                    try:
+                        with open(key_file, 'r') as f:
+                            key_data = json.load(f)
+                        
+                        logger.info(f"密钥文件内容键: {list(key_data.keys())}")
+                        
+                        # 检查是否有API Key字段
+                        if 'api_key' in key_data and key_data['api_key']:
+                            logger.info(f"从文件{key_file}中找到API Key")
+                            genai.configure(api_key=key_data['api_key'])
+                            return
+                        
+                        # 支持其他可能的字段名
+                        for key_field in ['google_api_key', 'gemini_api_key', 'key', 'token']:
+                            if key_field in key_data and key_data[key_field]:
+                                logger.info(f"从文件{key_file}的{key_field}字段中找到API Key")
+                                genai.configure(api_key=key_data[key_field])
+                                return
+                        
+                        # 如果是Service Account文件，尝试使用Service Account认证
+                        if 'type' in key_data and key_data['type'] == 'service_account':
+                            logger.info(f"检测到Service Account文件: {key_file}")
+                            try:
+                                credentials = service_account.Credentials.from_service_account_info(
+                                    key_data,
+                                    scopes=['https://www.googleapis.com/auth/generative-language']
+                                )
+                                genai.configure(credentials=credentials)
+                                logger.info("使用Service Account凭据配置成功")
+                                return
+                            except Exception as sa_error:
+                                logger.warning(f"Service Account认证失败: {str(sa_error)}")
+                                continue
+                                
+                    except json.JSONDecodeError:
+                        logger.warning(f"文件{key_file}不是有效的JSON格式")
+                        continue
+                    except Exception as file_error:
+                        logger.warning(f"读取文件{key_file}失败: {str(file_error)}")
+                        continue
+            
+            # 如果所有文件都失败了，尝试使用默认凭据
+            logger.info("尝试使用默认Google凭据")
+            try:
                 genai.configure()
+                logger.info("使用默认凭据配置成功")
+            except Exception as default_error:
+                logger.error(f"默认凭据配置失败: {str(default_error)}")
+                raise Exception("无法找到有效的Google AI认证方式。请设置GOOGLE_API_KEY环境变量或提供包含api_key字段的JSON文件。")
                 
         except Exception as e:
             logger.error(f"Google AI认证失败: {str(e)}")
@@ -127,12 +171,16 @@ class GeminiClient:
             
             # 检查响应是否被安全过滤器阻止
             if not response.text:
-                if response.prompt_feedback.block_reason:
+                if hasattr(response, 'prompt_feedback') and response.prompt_feedback and response.prompt_feedback.block_reason:
                     raise Exception(f"内容被阻止: {response.prompt_feedback.block_reason}")
                 else:
                     raise Exception("未收到有效响应")
             
-            return response.text
+            # 确保返回的是字符串
+            if isinstance(response.text, str):
+                return response.text
+            else:
+                return str(response.text)
             
         except Exception as e:
             logger.error(f"内容生成失败: {str(e)}")

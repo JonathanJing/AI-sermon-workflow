@@ -18,7 +18,8 @@ from ..services.video_clipping.ai_slicer import AISlicer
 from ..services.video_clipping.video_cutter import VideoCutter
 from ..services.video_clipping.validator import VideoValidator
 from ..services.video_clipping.title_tagger import TitleTagger
-from ..services.gemini_client import GeminiClient, create_gemini_client
+from ..services.gemini_client import get_global_client
+from ..config import settings
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -38,14 +39,8 @@ class ClippingRequest(BaseModel):
     enable_title_generation: bool = True
     quality_threshold: float = 0.5
 
-class ClippingConfig(BaseModel):
-    """切片配置模型"""
-    service_account_path: str = "service-account.json"
-    google_api_key: str = ""
-    model: str = "gemini-2.5-pro"
-    output_dir: str = "data/clips"
-    quality_thresholds: Dict = {}
-    gemini_config: Dict = {}
+# 简化配置 - 使用默认设置
+# 不再需要手动配置，系统自动使用环境设置
 
 class ClippingStatus(BaseModel):
     """切片状态模型"""
@@ -56,47 +51,11 @@ class ClippingStatus(BaseModel):
     created_at: str
     updated_at: str
 
-# 全局配置和状态
+# 全局状态
 jobs_status = {}  # 任务状态跟踪
-clipping_config = None  # 全局配置
 
-@router.post("/config", summary="配置切片服务")
-async def configure_service(config: ClippingConfig):
-    """配置视频切片服务"""
-    global clipping_config
-    
-    try:
-        clipping_config = config
-        
-        # 初始化并测试Gemini客户端
-        gemini_client = create_gemini_client(
-            service_account_path=config.service_account_path if config.service_account_path else None,
-            model_name=config.model
-        )
-        
-        # 测试连接
-        test_result = gemini_client.test_connection()
-        if not test_result['success']:
-            raise Exception(f"Gemini连接测试失败: {test_result['error']}")
-        
-        # 确保输出目录存在
-        os.makedirs(config.output_dir, exist_ok=True)
-        
-        return {
-            "success": True,
-            "message": "配置成功",
-            "config": {
-                "model": config.model,
-                "output_dir": config.output_dir,
-                "service_account_configured": bool(config.service_account_path and os.path.exists(config.service_account_path)),
-                "api_key_configured": bool(config.google_api_key),
-                "gemini_config": config.gemini_config
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"配置失败: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"配置失败: {str(e)}")
+# 移除配置接口 - 使用默认配置
+# 系统启动时自动初始化
 
 @router.post("/clip", summary="创建视频切片任务")
 async def create_clipping_job(
@@ -104,8 +63,9 @@ async def create_clipping_job(
     request: ClippingRequest
 ):
     """创建视频切片任务"""
-    if not clipping_config:
-        raise HTTPException(status_code=400, detail="请先配置服务")
+    # 检查Gemini客户端是否可用
+    if not get_global_client():
+        raise HTTPException(status_code=400, detail="Gemini客户端未初始化，请检查API密钥")
     
     # 验证文件存在
     if not os.path.exists(request.srt_file_path):
@@ -211,12 +171,13 @@ async def upload_and_clip(
     enable_title_generation: bool = Form(True)
 ):
     """上传SRT和视频文件并创建切片任务"""
-    if not clipping_config:
-        raise HTTPException(status_code=400, detail="请先配置服务")
+    # 检查Gemini客户端是否可用
+    if not get_global_client():
+        raise HTTPException(status_code=400, detail="Gemini客户端未初始化，请检查API密钥")
     
     try:
         # 创建上传目录
-        upload_dir = os.path.join(clipping_config.output_dir, "uploads")
+        upload_dir = os.path.join(settings.OUTPUT_DIR, "uploads")
         os.makedirs(upload_dir, exist_ok=True)
         
         # 保存上传的文件
@@ -307,7 +268,7 @@ async def delete_job(job_id: str):
         
         # 删除上传的文件
         if job.get("uploaded_files"):
-            upload_dir = os.path.join(clipping_config.output_dir, "uploads")
+            upload_dir = os.path.join(settings.OUTPUT_DIR, "uploads")
             for file_type, filename in job["uploaded_files"].items():
                 file_path = os.path.join(upload_dir, filename)
                 if os.path.exists(file_path):
@@ -334,13 +295,13 @@ async def get_service_summary():
     processing_jobs = len([j for j in jobs_status.values() if j["status"] == "processing"])
     
     return {
-        "service_configured": clipping_config is not None,
+        "service_configured": get_global_client() is not None,
         "total_jobs": total_jobs,
         "completed_jobs": completed_jobs,
         "failed_jobs": failed_jobs,
         "processing_jobs": processing_jobs,
         "pending_jobs": total_jobs - completed_jobs - failed_jobs - processing_jobs,
-        "output_directory": clipping_config.output_dir if clipping_config else None
+        "output_directory": settings.OUTPUT_DIR
     }
 
 # 后台任务处理函数
@@ -350,15 +311,14 @@ async def process_clipping_job(job_id: str, request: ClippingRequest):
         # 更新状态为处理中
         update_job_status(job_id, "processing", 0.1, "开始处理...")
         
-        # 初始化Gemini客户端
-        gemini_client = create_gemini_client(
-            service_account_path=clipping_config.service_account_path if clipping_config.service_account_path else None,
-            model_name=clipping_config.model
-        )
+        # 获取全局Gemini客户端
+        gemini_client = get_global_client()
+        if not gemini_client:
+            raise Exception("Gemini客户端未初始化")
         
         # 初始化服务组件
         ai_slicer = AISlicer(gemini_client)
-        video_cutter = VideoCutter(clipping_config.output_dir)
+        video_cutter = VideoCutter(settings.OUTPUT_DIR)
         validator = VideoValidator(gemini_client if request.enable_validation else None)
         title_tagger = TitleTagger(gemini_client) if request.enable_title_generation else None
         
@@ -414,7 +374,7 @@ async def process_clipping_job(job_id: str, request: ClippingRequest):
         }
         
         # 保存结果到文件
-        results_path = os.path.join(clipping_config.output_dir, f"{job_id}_results.json")
+        results_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_results.json")
         with open(results_path, 'w', encoding='utf-8') as f:
             json.dump(final_results, f, ensure_ascii=False, indent=2, default=str)
         

@@ -5,11 +5,14 @@
 
 import re
 import json
+import logging
 from typing import List, Dict, Optional, Set
 import jieba
 import jieba.analyse
 from collections import Counter
 from ..gemini_client import GeminiClient
+
+logger = logging.getLogger(__name__)
 
 class TitleTagger:
     """标题生成和标签系统"""
@@ -89,7 +92,7 @@ class TitleTagger:
             key_info['key_phrases'] = key_phrases
             
         except Exception as e:
-            print(f"关键词提取失败: {str(e)}")
+            logger.warning(f"关键词提取失败: {str(e)}")
         
         # 从现有元数据中提取信息
         if existing_metadata:
@@ -150,20 +153,23 @@ class TitleTagger:
             
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                result = json.loads(json_match.group())
-                titles = []
-                for item in result.get('titles', []):
-                    titles.append({
-                        'title': item['title'],
-                        'style': item.get('style', 'AI生成'),
-                        'reason': item.get('reason', ''),
-                        'source': 'ai',
-                        'score': 0.8  # 默认AI生成分数
-                    })
-                return titles
+                try:
+                    result = json.loads(json_match.group())
+                    titles = []
+                    for item in result.get('titles', []):
+                        titles.append({
+                            'title': item['title'],
+                            'style': item.get('style', 'AI生成'),
+                            'reason': item.get('reason', ''),
+                            'source': 'ai',
+                            'score': 0.8  # 默认AI生成分数
+                        })
+                    return titles
+                except json.JSONDecodeError:
+                    logger.warning(f"AI标题生成JSON解析失败: {json_match.group()}")
         
         except Exception as e:
-            print(f"AI标题生成失败: {str(e)}")
+            logger.error(f"AI标题生成失败: {str(e)}")
         
         return []
     

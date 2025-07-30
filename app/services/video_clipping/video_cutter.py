@@ -3,7 +3,7 @@
 基于时间戳和切片计划生成短视频文件
 """
 
-import ffmpeg
+import ffmpeg\nfrom datetime import datetime
 import os
 import uuid
 from typing import List, Dict, Optional
@@ -239,7 +239,7 @@ class VideoCutter:
             'total_file_size': total_size,
             'average_quality_score': avg_quality,
             'clips': results,
-            'timestamp': str(pd.Timestamp.now()) if 'pd' in globals() else str(datetime.now())
+            'timestamp': str(datetime.now())
         }
         
         # 保存摘要文件

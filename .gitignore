@@ -10,3 +10,5 @@
 *.DS_Store
 *.MP3
 service-account.json
+gemini-api-key.json
+*.mp4

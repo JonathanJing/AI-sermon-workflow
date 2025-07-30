@@ -6,11 +6,14 @@
 import os
 import ffmpeg
 import numpy as np
+import logging
 from typing import Dict, List, Optional, Tuple
 import json
 from datetime import datetime
 import re
 from ..gemini_client import GeminiClient
+
+logger = logging.getLogger(__name__)
 
 class VideoValidator:
     """视频质量验证器"""
@@ -320,12 +323,15 @@ class VideoValidator:
             
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                ai_analysis = json.loads(json_match.group())
-                validation_result['details']['ai_analysis'] = ai_analysis
-                return ai_analysis.get('overall_score', 0.5)
+                try:
+                    ai_analysis = json.loads(json_match.group())
+                    validation_result['details']['ai_analysis'] = ai_analysis
+                    return ai_analysis.get('overall_score', 0.5)
+                except json.JSONDecodeError:
+                    logger.warning(f"AI内容分析JSON解析失败: {json_match.group()}")
             
         except Exception as e:
-            print(f"AI内容分析失败: {str(e)}")
+            logger.error(f"AI内容分析失败: {str(e)}")
         
         return 0.5  # 默认分数
     

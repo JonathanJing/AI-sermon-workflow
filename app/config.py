@@ -15,7 +15,7 @@ class Settings:
     
     def __init__(self):
         # Google AI配置
-        self.GOOGLE_SERVICE_ACCOUNT_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "service-account.json")
+        self.GOOGLE_SERVICE_ACCOUNT_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "gemini-api-key.json")
         self.GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
         self.GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
         

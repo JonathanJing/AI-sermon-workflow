@@ -6,8 +6,11 @@ AI智能切片算法
 from typing import List, Dict, Optional
 import json
 import re
+import logging
 from .srt_parser import SRTParser
 from ..gemini_client import GeminiClient
+
+logger = logging.getLogger(__name__)
 
 class AISlicer:
     """AI智能切片器"""
@@ -94,12 +97,20 @@ class AISlicer:
             # 尝试提取JSON内容
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group())
+                try:
+                    return json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    logger.warning(f"JSON解析失败，使用默认响应: {json_match.group()}")
+                    return self._get_default_analysis()
             else:
-                return json.loads(response_text)
+                try:
+                    return json.loads(response_text)
+                except json.JSONDecodeError:
+                    logger.warning(f"响应不是有效JSON，使用默认响应: {response_text}")
+                    return self._get_default_analysis()
                 
         except Exception as e:
-            print(f"AI分析失败: {str(e)}")
+            logger.error(f"AI分析失败: {str(e)}")
             # 返回默认分析结果
             return {
                 'quality_score': 0.5,
