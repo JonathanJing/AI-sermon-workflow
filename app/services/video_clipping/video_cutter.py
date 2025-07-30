@@ -3,7 +3,8 @@
 基于时间戳和切片计划生成短视频文件
 """
 
-import ffmpeg\nfrom datetime import datetime
+import ffmpeg
+from datetime import datetime
 import os
 import uuid
 from typing import List, Dict, Optional

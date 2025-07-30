@@ -286,6 +286,52 @@ async def delete_job(job_id: str):
         logger.error(f"删除任务失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"删除任务失败: {str(e)}")
 
+@router.post("/reprocess/{job_id}", summary="重新处理已有任务")
+async def reprocess_job(job_id: str, background_tasks: BackgroundTasks):
+    """使用现有job_id重新触发切片处理"""
+    if job_id not in jobs_status:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    job = jobs_status[job_id]
+    
+    # 检查是否有原始请求数据
+    if "request" not in job:
+        raise HTTPException(status_code=400, detail="任务缺少原始请求信息")
+    
+    # 检查Gemini客户端是否可用
+    if not get_global_client():
+        raise HTTPException(status_code=400, detail="Gemini客户端未初始化，请检查API密钥")
+    
+    # 重建请求对象
+    request_data = job["request"]
+    request = ClippingRequest(**request_data)
+    
+    # 验证文件是否仍然存在
+    if not os.path.exists(request.srt_file_path):
+        raise HTTPException(status_code=404, detail="原SRT文件已不存在")
+    
+    if not os.path.exists(request.video_file_path):
+        raise HTTPException(status_code=404, detail="原视频文件已不存在")
+    
+    # 重置任务状态
+    jobs_status[job_id].update({
+        "status": "pending",
+        "progress": 0.0,
+        "message": "重新处理任务",
+        "updated_at": datetime.now().isoformat(),
+        "results": None
+    })
+    
+    # 添加后台任务
+    background_tasks.add_task(process_clipping_job, job_id, request)
+    
+    return {
+        "success": True,
+        "job_id": job_id,
+        "message": "任务已重新开始处理",
+        "status_url": f"/video-clipping/status/{job_id}"
+    }
+
 @router.get("/summary", summary="获取服务摘要")
 async def get_service_summary():
     """获取服务状态摘要"""
